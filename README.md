@@ -53,13 +53,59 @@ New circles land next to the notch on the left and push the others outward. When
 
 ## Install
 
-Requires macOS 26 or later and Swift 6.2 or later (Xcode 26+).
+There is no prebuilt download yet. You build the app from the source on GitHub, which takes a minute or two.
+
+**You need:**
+- A Mac on macOS 26 or later. The circles sit beside the notch, so a MacBook with a notch is best.
+- Xcode 26 or later, which brings Swift 6.2. Install it from the App Store and open it once to accept its license. The Command Line Tools alone (`xcode-select --install`) also work if they include Swift 6.2; check with `swift --version`.
+
+**1. Get the code.** Either clone it with git:
 
 ```bash
-./scripts/bundle.sh release      # builds build/AgentIsland.app
-mv build/AgentIsland.app /Applications/   # optional
+git clone https://github.com/vihAan02/agent-island.git
+```
+
+Or, without git, open [github.com/vihAan02/agent-island](https://github.com/vihAan02/agent-island), click **Code → Download ZIP**, and double-click the ZIP to unpack it. The folder is called `agent-island-main`; use that name in the next step.
+
+**2. Build the app.** In Terminal:
+
+```bash
+cd agent-island
+./scripts/bundle.sh release
+```
+
+This builds `build/AgentIsland.app`. If Terminal says `permission denied`, run `chmod +x scripts/*.sh` and try again.
+
+**3. Move it to Applications and open it:**
+
+```bash
+mv build/AgentIsland.app /Applications/
 open /Applications/AgentIsland.app
 ```
+
+Moving it is optional, but do it before you add hooks: the hooks point at wherever the app is when you add them.
+
+**4. Set it up.** The first launch opens the window on the **Hooks** page. Press **Add Hooks** for Claude Code (and Codex, if you use it). Then start a Claude Code session, and its circle appears by the notch. See [Using it](#using-it) and [Hooks](#hooks) for the rest.
+
+Because you built it yourself, macOS opens it without a Gatekeeper warning.
+
+### Updating
+
+```bash
+cd agent-island
+git pull
+./scripts/bundle.sh release
+rm -rf /Applications/AgentIsland.app && mv build/AgentIsland.app /Applications/
+open /Applications/AgentIsland.app
+```
+
+If you downloaded the ZIP, download a fresh one instead of `git pull`. After updating, turn Agent Island off and on again under **System Settings → Privacy & Security → Accessibility** if you use sending from the card (see [Known limits](#known-limits)). Restart any open Claude Code sessions to pick up changed hooks.
+
+### Uninstalling
+
+1. Press **Remove Hooks** on the Hooks page (or run `/Applications/AgentIsland.app/Contents/MacOS/AgentIsland --uninstall-hooks`). This removes only Agent Island's entries from `~/.claude/settings.json`.
+2. Quit Agent Island from its menu bar menu and delete `/Applications/AgentIsland.app`.
+3. Optionally delete `~/Library/Application Support/AgentIsland` and `~/Library/Caches/AgentIsland`.
 
 ## Using it
 
