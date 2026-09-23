@@ -8,17 +8,18 @@ struct AgentIslandApp: App {
 
     var body: some Scene {
         MenuBarExtra("Agent Island", systemImage: "circle.grid.2x1.left.filled") {
-            IslandMenu(model: AppEnvironment.shared.model)
+            IslandMenu(model: AppEnvironment.shared.model, hooks: AppEnvironment.shared.hooks)
         }
     }
 }
 
-/// One place for the objects the menu and the delegate both need.
+/// One place for the objects the menu, the window, and the delegate all need.
 @MainActor
 final class AppEnvironment {
     static let shared = AppEnvironment()
 
     let settings = IslandSettings()
+    let hooks = HookManager()
     lazy var model = IslandModel(
         settings: settings,
         demoMode: CommandLine.arguments.contains("--demo")
@@ -29,42 +30,64 @@ final class AppEnvironment {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelController: PanelController?
 
+    /// Posted by a second copy of the app, launched from somewhere else, asking this
+    /// one to show its window before the second copy quits.
+    nonisolated static let openWindowNotification = Notification.Name("com.agentisland.app.openWindow")
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        let arguments = CommandLine.arguments
 
         // One copy at a time: two would fight over the hook socket.
-        let isTool = CommandLine.arguments.contains { $0.hasPrefix("--") && $0 != "--demo" }
+        let isTool = arguments.contains { $0.hasPrefix("--") && $0 != "--demo" }
         if !isTool, !SingleInstance.acquire() {
-            NSLog("Agent Island is already running")
+            NSLog("Agent Island is already running; asking it to show its window")
+            DistributedNotificationCenter.default().postNotificationName(
+                Self.openWindowNotification,
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: true
+            )
             NSApp.terminate(nil)
             return
         }
 
-        // `--probe` prints what the watchers can see and exits. Used to check detection.
-        if CommandLine.arguments.contains("--probe") {
-            Task { await ProbeMode.run() }
+        // `--probe [seconds]` prints what the watchers can see and exits. Used to check
+        // detection, and with scripts/simulate.sh to check the hook path headlessly.
+        if let index = arguments.firstIndex(of: "--probe") {
+            let seconds = arguments.count > index + 1 ? Int(arguments[index + 1]) : nil
+            Task { await ProbeMode.run(seconds: seconds ?? 6) }
             return
         }
 
         // `--install-hooks` / `--uninstall-hooks` for scripting and for the README.
-        if CommandLine.arguments.contains("--install-hooks") {
+        if arguments.contains("--install-hooks") {
             runHookCommand(install: true)
             return
         }
-        if CommandLine.arguments.contains("--uninstall-hooks") {
+        if arguments.contains("--uninstall-hooks") {
             runHookCommand(install: false)
             return
         }
 
         // `--render <dir>` draws the island offscreen and exits. Used for visual checks.
-        if let index = CommandLine.arguments.firstIndex(of: "--render") {
-            let directory = CommandLine.arguments.count > index + 1
-                ? CommandLine.arguments[index + 1]
+        if let index = arguments.firstIndex(of: "--render") {
+            let directory = arguments.count > index + 1
+                ? arguments[index + 1]
                 : FileManager.default.currentDirectoryPath
             RenderMode.run(outputDirectory: directory)
             NSApp.terminate(nil)
             return
         }
+
+        // `--render-icon <dir>.iconset` writes the app icon for scripts/bundle.sh.
+        if let index = arguments.firstIndex(of: "--render-icon"), arguments.count > index + 1 {
+            AppIcon.writeIconset(to: arguments[index + 1])
+            NSApp.terminate(nil)
+            return
+        }
+
+        AppIcon.applyIfBundleHasNone()
 
         let model = AppEnvironment.shared.model
         let controller = PanelController { geometry in
@@ -79,80 +102,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onHover = { [weak model] point in
             model?.setPointer(point)
         }
+        controller.pointerTarget = model
         model.onExpansionChanged = { [weak controller] expanded in
             controller?.setExpanded(expanded)
         }
 
         model.start()
-        offerHookInstallIfNeeded()
+
+        DistributedNotificationCenter.default().addObserver(
+            forName: Self.openWindowNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { MainWindowController.shared.show() }
+        }
+
+        openWindowAtLaunchIfWanted()
     }
 
-    /// Asks once, on the first launch, before touching the agents' settings files.
-    private func offerHookInstallIfNeeded() {
-        guard !CommandLine.arguments.contains("--demo") else { return }
-        let settings = AppEnvironment.shared.settings
+    /// Opening the app from Finder, Spotlight, or the Dock while it is already
+    /// running shows the window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        MainWindowController.shared.show()
+        return false
+    }
+
+    /// Closing the window only hides it; the island keeps running in the menu bar.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    /// A launch you asked for opens the window. A launch at login, or one of the
+    /// developer modes, keeps to the menu bar.
+    ///
+    /// The very first launch opens on Hooks, so the choice about touching
+    /// `~/.claude/settings.json` is made there rather than in a modal alert.
+    private func openWindowAtLaunchIfWanted() {
+        guard !CommandLine.arguments.contains("--demo"), !launchedAsLoginItem else { return }
+
         let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: "askedAboutHooks"), !settings.claudeHooksInstalled else { return }
+        let firstRun = !defaults.bool(forKey: "askedAboutHooks")
         defaults.set(true, forKey: "askedAboutHooks")
 
-        let alert = NSAlert()
-        alert.messageText = "Let Agent Island read Claude Code status?"
-        alert.informativeText = """
-            It adds a few hook entries to ~/.claude/settings.json that report when a \
-            session starts, asks you something, hits an error, or finishes. Your current \
-            settings file is backed up first, and you can remove the hooks from the menu \
-            bar at any time.
+        let needsHooks = AppEnvironment.shared.hooks.state(for: .claude) != .installed
+        MainWindowController.shared.show(firstRun && needsHooks ? .hooks : .agents)
+    }
 
-            Without them the island still works, but permission prompts look the same as \
-            a long-running tool.
-            """
-        alert.addButton(withTitle: "Add Hooks")
-        alert.addButton(withTitle: "Not Now")
-        alert.alertStyle = .informational
+    /// True when macOS started the app as a login item.
+    private var launchedAsLoginItem: Bool {
+        guard
+            let event = NSAppleEventManager.shared().currentAppleEvent,
+            event.eventID == Self.fourCharCode("oapp")
+        else { return false }
+        return event.paramDescriptor(forKeyword: Self.fourCharCode("prdt"))?.enumCodeValue
+            == Self.fourCharCode("lgit")
+    }
 
-        NSApp.activate()
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        do {
-            try settings.installClaudeHooks()
-        } catch {
-            presentError("Could not add the hooks", error)
-        }
+    private static func fourCharCode(_ code: String) -> UInt32 {
+        code.utf8.reduce(0) { $0 << 8 | UInt32($1) }
     }
 
     private func runHookCommand(install: Bool) {
-        let settings = AppEnvironment.shared.settings
-        do {
-            if install {
-                try settings.installClaudeHooks()
-                print("Claude hooks installed in \(IslandPaths.claudeSettings)")
-                print("Hook binary: \(IslandSettings.hookBinaryPath)")
-            } else {
-                try settings.uninstallClaudeHooks()
-                print("Claude hooks removed from \(IslandPaths.claudeSettings)")
-            }
-        } catch {
-            print("Failed: \(error)")
+        let hooks = AppEnvironment.shared.hooks
+        let succeeded = install ? hooks.install(.claude) : hooks.uninstall(.claude)
+        if succeeded {
+            print(install
+                ? "Claude hooks installed in \(IslandPaths.claudeSettings)\nHook binary: \(IslandSettings.hookBinaryPath)"
+                : "Claude hooks removed from \(IslandPaths.claudeSettings)")
+        } else {
+            print("Failed: \(hooks.errors[.claude] ?? "unknown error")")
         }
         NSApp.terminate(nil)
     }
-
-    private func presentError(_ title: String, _ error: Error) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = "\(error)"
-        alert.runModal()
-    }
 }
 
-/// The menu bar menu: what is running, what to watch, and hook management.
+/// The menu bar menu: what is running, what to watch, hooks, and the way into the window.
 struct IslandMenu: View {
     @Bindable var model: IslandModel
+    let hooks: HookManager
 
     var body: some View {
         let _ = Diagnostics.count("menu-body")
         let settings = model.settings
 
-        Text(summary)
+        Text(model.summary)
+
+        Button("Open Agent Island\u{2026}") { MainWindowController.shared.show(.agents) }
+            .keyboardShortcut("o")
 
         Divider()
 
@@ -186,16 +222,8 @@ struct IslandMenu: View {
 
         Divider()
 
-        if settings.claudeHooksInstalled {
-            Button("Remove Claude Hooks") { try? settings.uninstallClaudeHooks() }
-        } else {
-            Button("Add Claude Hooks\u{2026}") { try? settings.installClaudeHooks() }
-        }
-        if settings.codexHooksInstalled {
-            Button("Remove Codex Hooks") { try? settings.uninstallCodexHooks() }
-        } else {
-            Button("Add Codex Hooks\u{2026}") { try? settings.installCodexHooks() }
-        }
+        hookButton(.claude, name: "Claude")
+        hookButton(.codex, name: "Codex")
 
         Divider()
 
@@ -203,14 +231,20 @@ struct IslandMenu: View {
             .keyboardShortcut("q")
     }
 
-    private var summary: String {
-        let count = model.bubbles.count
-        if count == 0 { return "No agents running" }
-        let working = model.bubbles.filter { $0.session.status == .working }.count
-        let waiting = model.bubbles.filter { $0.session.status == .question }.count
-        var parts = ["\(count) session\(count == 1 ? "" : "s")"]
-        if working > 0 { parts.append("\(working) working") }
-        if waiting > 0 { parts.append("\(waiting) waiting for you") }
-        return parts.joined(separator: " \u{00b7} ")
+    @ViewBuilder
+    private func hookButton(_ kind: AgentKind, name: String) -> some View {
+        switch hooks.state(for: kind) {
+        case .notInstalled:
+            Button("Add \(name) Hooks") { run { hooks.install(kind) } }
+        case .installed:
+            Button("Remove \(name) Hooks") { run { hooks.uninstall(kind) } }
+        case .elsewhere:
+            Button("Repair \(name) Hooks") { run { hooks.install(kind) } }
+        }
+    }
+
+    /// A failed change opens the Hooks page, where the error is shown.
+    private func run(_ change: () -> Bool) {
+        if !change() { MainWindowController.shared.show(.hooks) }
     }
 }

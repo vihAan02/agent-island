@@ -82,12 +82,8 @@ struct PetTests {
         #expect(PetAnimations.animation(for: .idle, secondsInStatus: 0).row == 0)
     }
 
-    @Test("The sprite sheet is read out of the installed Codex app")
+    @Test("The sprite sheet is read out of the installed Codex app", .enabled(if: codexAppInstalled))
     func readsInstalledPet() throws {
-        try #require(
-            FileManager.default.fileExists(atPath: IslandPaths.chatGPTAsar),
-            "Codex app not installed; skipping"
-        )
         let catalog = PetCatalog(cacheDirectory: NSTemporaryDirectory() + "agent-island-tests")
         let pets = catalog.builtInPetIDs()
         #expect(pets.contains("codex"))
@@ -98,12 +94,8 @@ struct PetTests {
         #expect(data.count > 100_000)
     }
 
-    @Test("The asar index resolves a known path")
+    @Test("The asar index resolves a known path", .enabled(if: codexAppInstalled))
     func readsAsarIndex() throws {
-        try #require(
-            FileManager.default.fileExists(atPath: IslandPaths.chatGPTAsar),
-            "Codex app not installed; skipping"
-        )
         let reader = try #require(AsarReader(path: IslandPaths.chatGPTAsar))
         let names = reader.names(inDirectory: "webview/assets")
         #expect(!names.isEmpty)
@@ -111,6 +103,34 @@ struct PetTests {
         let sheet = try #require(names.first { $0.hasPrefix("codex-spritesheet-v") })
         let entry = try #require(reader.entry(at: "webview/assets/\(sheet)"))
         #expect(entry.size > 0)
+    }
+}
+
+@Suite("Pet catalog cache")
+struct PetCatalogCacheTests {
+    @Test("Asking twice gives the same pets and the same sheet", .enabled(if: codexAppInstalled))
+    func cachedAnswersMatch() throws {
+        let catalog = PetCatalog(cacheDirectory: NSTemporaryDirectory() + "agent-island-cache-\(UUID().uuidString)")
+        let first = catalog.builtInPetIDs()
+        #expect(!first.isEmpty)
+        #expect(catalog.builtInPetIDs() == first)
+
+        let path = try #require(catalog.imagePath(for: "codex"))
+        #expect(catalog.imagePath(for: "codex") == path)
+    }
+
+    @Test("A sheet purged from the cache is extracted again", .enabled(if: codexAppInstalled))
+    func purgedSheetComesBack() throws {
+        let directory = NSTemporaryDirectory() + "agent-island-cache-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let catalog = PetCatalog(cacheDirectory: directory)
+
+        let path = try #require(catalog.imagePath(for: "codex"))
+        #expect(path.hasPrefix(directory), "each cache directory gets its own copy")
+        try FileManager.default.removeItem(atPath: path)
+
+        #expect(catalog.imagePath(for: "codex") == path)
+        #expect(FileManager.default.fileExists(atPath: path))
     }
 }
 
@@ -149,3 +169,6 @@ struct PetCatalogFallbackTests {
         #expect(catalog.imagePath(for: "sparky") == petDirectory + "/spritesheet.webp")
     }
 }
+
+/// The pet tests read real art out of ChatGPT.app, so they only run where it is installed.
+private let codexAppInstalled = FileManager.default.fileExists(atPath: IslandPaths.chatGPTAsar)

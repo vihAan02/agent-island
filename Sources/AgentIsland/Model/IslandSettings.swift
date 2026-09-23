@@ -23,11 +23,28 @@ final class IslandSettings {
 
     private let defaults = UserDefaults.standard
 
+    /// Called when a Watch toggle flips, so the model can start or stop that agent's
+    /// watchers without a relaunch.
+    @ObservationIgnored var onWatchChanged: ((AgentKind, Bool) -> Void)?
+
     var watchClaude: Bool {
-        didSet { defaults.set(watchClaude, forKey: "watchClaude") }
+        didSet {
+            defaults.set(watchClaude, forKey: "watchClaude")
+            if watchClaude != oldValue { onWatchChanged?(.claude, watchClaude) }
+        }
     }
     var watchCodex: Bool {
-        didSet { defaults.set(watchCodex, forKey: "watchCodex") }
+        didSet {
+            defaults.set(watchCodex, forKey: "watchCodex")
+            if watchCodex != oldValue { onWatchChanged?(.codex, watchCodex) }
+        }
+    }
+
+    func isWatching(_ kind: AgentKind) -> Bool {
+        switch kind {
+        case .claude: watchClaude
+        case .codex: watchCodex
+        }
     }
     var visibility: Visibility {
         didSet { defaults.set(visibility.rawValue, forKey: "visibility") }
@@ -39,6 +56,10 @@ final class IslandSettings {
     var codexPetID: String {
         didSet { defaults.set(codexPetID, forKey: "codexPetID") }
     }
+    /// Which side of the notch new circles appear on. Any circle can be dragged across.
+    var newCircleSide: IslandSide {
+        didSet { defaults.set(newCircleSide.rawValue, forKey: "newCircleSide") }
+    }
 
     init() {
         defaults.register(defaults: [
@@ -46,6 +67,7 @@ final class IslandSettings {
             "watchCodex": true,
             "visibility": Visibility.stayWhileWorking.rawValue,
             "tuckAfter": 5.0,
+            "newCircleSide": IslandSide.left.rawValue,
         ])
         watchClaude = defaults.bool(forKey: "watchClaude")
         watchCodex = defaults.bool(forKey: "watchCodex")
@@ -53,6 +75,7 @@ final class IslandSettings {
             ?? .stayWhileWorking
         tuckAfter = defaults.double(forKey: "tuckAfter")
         codexPetID = defaults.string(forKey: "codexPetID") ?? PetCatalog.preferredPetID()
+        newCircleSide = IslandSide(rawValue: defaults.string(forKey: "newCircleSide") ?? "") ?? .left
     }
 
     // MARK: - Hooks
@@ -64,37 +87,5 @@ final class IslandSettings {
         let sibling = executable?.appendingPathComponent("agent-island-hook").path
         if let sibling, FileManager.default.fileExists(atPath: sibling) { return sibling }
         return sibling ?? "agent-island-hook"
-    }
-
-    var claudeHooksInstalled: Bool {
-        HookInstaller.isInstalled(settingsPath: IslandPaths.claudeSettings)
-    }
-
-    var codexHooksInstalled: Bool {
-        HookInstaller.isInstalled(settingsPath: IslandPaths.codexHooks)
-    }
-
-    func installClaudeHooks() throws {
-        try HookInstaller.install(
-            settingsPath: IslandPaths.claudeSettings,
-            binaryPath: Self.hookBinaryPath,
-            agent: .claude
-        )
-    }
-
-    func uninstallClaudeHooks() throws {
-        try HookInstaller.uninstall(settingsPath: IslandPaths.claudeSettings)
-    }
-
-    func installCodexHooks() throws {
-        try HookInstaller.install(
-            settingsPath: IslandPaths.codexHooks,
-            binaryPath: Self.hookBinaryPath,
-            agent: .codex
-        )
-    }
-
-    func uninstallCodexHooks() throws {
-        try HookInstaller.uninstall(settingsPath: IslandPaths.codexHooks)
     }
 }

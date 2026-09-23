@@ -6,7 +6,7 @@ struct ExpandedCard: View {
     let session: AgentSession
     let clock: Double
 
-    static let size = CGSize(width: 268, height: 74)
+    nonisolated static let size = CGSize(width: 268, height: 74)
 
     var body: some View {
         let accent = IslandStyle.ring(for: session)
@@ -40,12 +40,12 @@ struct ExpandedCard: View {
                 .lineLimit(1)
 
             HStack(spacing: 5) {
-                Text(statusText)
+                Text(session.statusLine)
                     .font(.system(size: 10.5))
                     .foregroundStyle(accent)
                     .lineLimit(1)
                 Spacer(minLength: 2)
-                Text(elapsed)
+                Text(session.elapsedText())
                     .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(.white.opacity(0.45))
             }
@@ -55,25 +55,5 @@ struct ExpandedCard: View {
         .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
         .background(Color.black.opacity(0.001)) // keeps the whole card clickable
         .contentShape(Rectangle())
-    }
-
-    private var statusText: String {
-        if let detail = session.detail, !detail.isEmpty { return detail }
-        switch session.status {
-        case .working: return "Working\u{2026}"
-        case .question: return "Waiting for you"
-        case .plan: return session.planMode ? "Planning" : "Plan ready for review"
-        case .error: return "Something failed"
-        case .complete: return "Done"
-        case .idle: return "Idle"
-        case .waiting: return "Ready"
-        }
-    }
-
-    private var elapsed: String {
-        let seconds = Int(max(0, Date().timeIntervalSince(session.statusChangedAt)))
-        if seconds < 60 { return "\(seconds)s" }
-        if seconds < 3600 { return "\(seconds / 60)m" }
-        return "\(seconds / 3600)h"
     }
 }

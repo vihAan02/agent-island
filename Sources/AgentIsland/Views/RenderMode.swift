@@ -19,7 +19,71 @@ enum RenderMode {
         write(statusSheet(), to: directory.appendingPathComponent("statuses.png"))
         write(effortSheet(), to: directory.appendingPathComponent("efforts.png"))
         write(cardSheet(), to: directory.appendingPathComponent("card.png"))
+        write(dragSheet(), to: directory.appendingPathComponent("drag.png"))
+        write(modelDragSheet(), to: directory.appendingPathComponent("drag-model.png"))
         write(mascotSheet(), to: directory.appendingPathComponent("mascots.png"))
+        writeWindowPages(to: directory)
+    }
+
+    // MARK: - Main window
+
+    /// Each page of the main window, with a few sample sessions, drawn from a real
+    /// window kept out of sight. AppKit controls only draw properly through AppKit,
+    /// so this goes through `cacheDisplay` rather than `ImageRenderer`.
+    private static func writeWindowPages(to directory: URL) {
+        let model = IslandModel(settings: AppEnvironment.shared.settings)
+        for event in sampleEvents() { model.handle(event) }
+
+        let state = MainWindowState()
+        let hosting = NSHostingController(
+            rootView: MainWindowView(state: state, model: model, hooks: AppEnvironment.shared.hooks)
+        )
+        hosting.sizingOptions = []
+        let window = NSWindow(contentViewController: hosting)
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.title = "Agent Island"
+        window.setContentSize(NSSize(width: 800, height: 540))
+        window.alphaValue = 0
+        window.orderFrontRegardless()
+
+        for section in MainSection.allCases {
+            state.section = section
+            // Give SwiftUI and the list a moment to lay out and load their rows.
+            RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+
+            guard let frame = window.contentView?.superview ?? window.contentView,
+                  let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)
+            else { continue }
+            frame.cacheDisplay(in: frame.bounds, to: bitmap)
+
+            let url = directory.appendingPathComponent("window-\(section.rawValue).png")
+            if let data = bitmap.representation(using: .png, properties: [:]) {
+                try? data.write(to: url)
+                print("wrote \(url.path)")
+            }
+        }
+        window.orderOut(nil)
+    }
+
+    private static func sampleEvents() -> [AgentEvent] {
+        let cwd = FileManager.default.currentDirectoryPath
+        return [
+            .claudeRegistry([
+                ClaudeRegistryEntry(pid: 90001, sessionID: "sample-1", cwd: cwd, name: "Refactor the liquid layer", status: "busy", effort: .xhigh, isUltra: true),
+                ClaudeRegistryEntry(pid: 90002, sessionID: "sample-2", cwd: cwd, name: "Fix the flaky clock test", status: "busy", effort: .max),
+            ]),
+            .hook(HookEvent(
+                kind: .claude,
+                name: .permissionRequest,
+                sessionID: "sample-2",
+                cwd: cwd,
+                toolName: "Bash",
+                toolSummary: "Bash(npm test -- --runInBand)"
+            )),
+            .codex(CodexEvent(threadID: "sample-3", kind: .discovered(cwd: "/Users/me/ocr", title: "Port the parser to Rust"))),
+            .codex(CodexEvent(threadID: "sample-3", kind: .turnContext(effort: .ultra, planMode: false))),
+            .codex(CodexEvent(threadID: "sample-3", kind: .taskStarted)),
+        ]
     }
 
     // MARK: - Sheets
@@ -35,7 +99,7 @@ enum RenderMode {
                 labeled("t = \(String(format: "%.2f", time))s") {
                     band(geometry: geometry) {
                         [
-                            layout(session: session, slot: 0, geometry: geometry, progress: Spring.value(time: time)),
+                            layout(session: session, side: .left, rank: 0, geometry: geometry, progress: Spring.value(time: time)),
                         ]
                     }
                 }
@@ -56,11 +120,11 @@ enum RenderMode {
                         [
                             layout(
                                 session: sampleSession(kind: .claude, status: status, effort: .high),
-                                slot: 0, geometry: geometry, progress: 1
+                                side: .left, rank: 0, geometry: geometry, progress: 1
                             ),
                             layout(
                                 session: sampleSession(kind: .codex, status: status, effort: .high),
-                                slot: 1, geometry: geometry, progress: 1
+                                side: .left, rank: 1, geometry: geometry, progress: 1
                             ),
                         ]
                     }
@@ -70,7 +134,7 @@ enum RenderMode {
         .background(backdrop)
     }
 
-    /// Every effort tier, Claude on the right of the notch, Codex on the left.
+    /// Every effort tier, Claude next to the notch, Codex beside it.
     private static func effortSheet() -> some View {
         let geometry = sampleGeometry()
         let tiers: [EffortTier] = [.low, .medium, .high, .xhigh, .max, .ultra]
@@ -84,13 +148,13 @@ enum RenderMode {
                                 session: sampleSession(
                                     kind: .claude, status: .working, effort: tier, ultra: tier == .ultra
                                 ),
-                                slot: 0, geometry: geometry, progress: 1
+                                side: .left, rank: 0, geometry: geometry, progress: 1
                             ),
                             layout(
                                 session: sampleSession(
                                     kind: .codex, status: .working, effort: tier, ultra: tier == .ultra
                                 ),
-                                slot: 1, geometry: geometry, progress: 1
+                                side: .left, rank: 1, geometry: geometry, progress: 1
                             ),
                         ]
                     }
@@ -112,7 +176,7 @@ enum RenderMode {
             sampleSession(kind: .codex, status: .complete, effort: .high, title: "Review notebook"),
         ]
         let layouts = sessions.enumerated().map { index, session in
-            layout(session: session, slot: index, geometry: geometry, progress: 1)
+            layout(session: session, side: .left, rank: index, geometry: geometry, progress: 1)
         }
 
         return VStack(alignment: .leading, spacing: 0) {
@@ -130,6 +194,120 @@ enum RenderMode {
             }
         }
         .background(backdrop)
+    }
+
+    /// One circle dragged from the left, across the notch, and let go on the right,
+    /// then the landing, frame by frame: the others close up behind it, and it
+    /// overshoots its place and swings back.
+    private static func dragSheet() -> some View {
+        let geometry = sampleGeometry()
+        let sessions = [
+            sampleSession(kind: .claude, status: .working, effort: .xhigh, ultra: true, title: "a"),
+            sampleSession(kind: .codex, status: .working, effort: .high, title: "b"),
+            sampleSession(kind: .claude, status: .question, effort: .max, title: "c"),
+        ]
+        let dragged = sessions[1]
+        let rest = geometry.notchRect.midY
+        let target = geometry.slotCenter(side: .right, rank: 0)
+        let letGo = CGPoint(x: target.x + 34, y: rest + 5)
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        var x = SpringMotion(at: 0, now: start)
+        x.release(from: letGo.x, velocity: 700, to: target.x, at: start)
+        var y = SpringMotion(at: 0, now: start)
+        y.release(from: letGo.y, velocity: 0, to: rest, at: start)
+
+        func frame(_ label: String, dragAt: CGPoint?, others: [(AgentSession, Int)], landed: CGPoint?) -> some View {
+            var layouts = others.map { session, rank in
+                layout(session: session, side: .left, rank: rank, geometry: geometry, progress: 1)
+            }
+            if let dragAt {
+                var held = layout(session: dragged, side: geometry.side(for: dragAt.x), rank: 0, geometry: geometry, progress: 1)
+                held.center = dragAt
+                layouts.append(held)
+            }
+            if let landed {
+                var down = layout(session: dragged, side: .right, rank: 0, geometry: geometry, progress: 1)
+                down.center = landed
+                layouts.append(down)
+            }
+            return labeled(label) { band(geometry: geometry) { layouts } }
+        }
+
+        let leftOrigin = geometry.slotCenter(side: .left, rank: 1)
+        let times: [Double] = [0, 0.06, 0.12, 0.2, 0.3, 0.45, 0.8]
+
+        return VStack(alignment: .leading, spacing: 0) {
+            frame("picked up", dragAt: CGPoint(x: leftOrigin.x, y: rest + 5),
+                  others: [(sessions[0], 0), (sessions[2], 2)], landed: nil)
+            frame("crossing the notch", dragAt: CGPoint(x: geometry.notchRect.minX + 18, y: rest + 5),
+                  others: [(sessions[0], 0), (sessions[2], 1)], landed: nil)
+            frame("over the right side", dragAt: letGo,
+                  others: [(sessions[0], 0), (sessions[2], 1)], landed: nil)
+            ForEach(times, id: \.self) { time in
+                let moment = start.addingTimeInterval(time)
+                frame("let go, t = \(String(format: "%.2f", time))s", dragAt: nil,
+                      others: [(sessions[0], 0), (sessions[2], 1)],
+                      landed: CGPoint(x: x.value(at: moment), y: y.value(at: moment)))
+            }
+        }
+        .background(backdrop)
+    }
+
+    /// The same drag, but driven through the real model with made-up pointer events:
+    /// press, drag across the notch, let go. What it draws is what the model decided.
+    private static func modelDragSheet() -> some View {
+        let geometry = sampleGeometry()
+        let model = IslandModel(settings: AppEnvironment.shared.settings)
+        model.geometry = geometry
+        for event in sampleEvents() { model.handle(event) }
+        // The emerge springs run on the wall clock.
+        RunLoop.main.run(until: Date().addingTimeInterval(1.4))
+
+        var frames: [(String, [BubbleLayout])] = []
+        func snapshot(_ label: String) {
+            let layouts = IslandLayout.layouts(for: model.bubbles, geometry: geometry, now: Date(), drag: model.liveDrag)
+            frames.append((label, layouts))
+        }
+        snapshot("before: " + describe(model.bubbles))
+
+        // Pick up the second circle on the left and carry it past the notch.
+        let picked = model.bubbles.first { $0.side == .left && $0.rank == 1 }
+        if let picked {
+            let from = picked.restingCenter
+            let to = CGPoint(x: geometry.slotCenter(side: .right, rank: 0).x + 26, y: from.y + 4)
+            model.pressBegan(on: picked.id, at: from)
+            let steps = 16
+            for step in 1...steps {
+                let t = CGFloat(step) / CGFloat(steps)
+                model.pressMoved(to: CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t))
+                RunLoop.main.run(until: Date().addingTimeInterval(0.016))
+                if step == 4 { snapshot("dragging: the others close up") }
+                if step == 10 { snapshot("dragging: over the notch") }
+            }
+            snapshot("dragging: over the right side")
+            model.pressEnded(at: to)
+
+            let letGo = Date()
+            for t in [0.0, 0.06, 0.14, 0.25, 0.4, 0.7, 1.2] {
+                let layouts = IslandLayout.layouts(for: model.bubbles, geometry: geometry, now: letGo.addingTimeInterval(t))
+                frames.append((String(format: "let go, t = %.2fs", t), layouts))
+            }
+            frames.append(("after: " + describe(model.bubbles), frames.last?.1 ?? []))
+        }
+
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(frames.enumerated()), id: \.offset) { _, frame in
+                labeled(frame.0) { band(geometry: geometry) { frame.1 } }
+            }
+        }
+        .background(backdrop)
+    }
+
+    private static func describe(_ bubbles: [Bubble]) -> String {
+        bubbles.map { bubble in
+            let name = bubble.session.displayTitle.split(separator: " ").first.map(String.init) ?? "?"
+            return "\(name) \(bubble.side?.rawValue ?? "none") \(bubble.rank)"
+        }.joined(separator: ", ")
     }
 
     /// Both mascots, drawn large, in every status. This is the sheet to look at when
@@ -248,23 +426,24 @@ enum RenderMode {
 
     private static func layout(
         session: AgentSession,
-        slot: Int,
+        side: IslandSide,
+        rank: Int,
         geometry: NotchGeometry,
         progress: Double
     ) -> BubbleLayout {
-        let start = geometry.slotOrigin(index: slot)
-        let end = geometry.slotCenter(index: slot)
+        let start = geometry.slotOrigin(side: side)
+        let end = geometry.slotCenter(side: side, rank: rank)
         return BubbleLayout(
             id: session.id,
             session: session,
-            slot: slot,
+            side: side,
+            rank: rank,
             center: CGPoint(
                 x: start.x + (end.x - start.x) * progress,
                 y: start.y + (end.y - start.y) * progress
             ),
             diameter: geometry.circleDiameter,
-            progress: progress,
-            isOnRightSide: geometry.isOnRightSide(index: slot)
+            progress: progress
         )
     }
 

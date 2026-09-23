@@ -51,22 +51,30 @@ public enum HookInstaller {
     // MARK: - Status
 
     public static func isInstalled(settingsPath: String) -> Bool {
+        !installedCommands(settingsPath: settingsPath).isEmpty
+    }
+
+    /// Every Agent Island command the settings file runs. More than one, or one that
+    /// is not this app's helper, means the app moved since the hooks were added.
+    public static func installedCommands(settingsPath: String) -> Set<String> {
         guard
             let data = FileManager.default.contents(atPath: settingsPath),
             let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
             let hooks = root["hooks"] as? [String: Any]
-        else { return false }
+        else { return [] }
 
+        var commands: Set<String> = []
         for (_, value) in hooks {
             guard let groups = value as? [[String: Any]] else { continue }
             for group in groups {
-                let entries = (group["hooks"] as? [[String: Any]]) ?? []
-                if entries.contains(where: { ($0["command"] as? String)?.contains(marker) == true }) {
-                    return true
+                for entry in (group["hooks"] as? [[String: Any]]) ?? [] {
+                    if let command = entry["command"] as? String, command.contains(marker) {
+                        commands.insert(command)
+                    }
                 }
             }
         }
-        return false
+        return commands
     }
 
     // MARK: - Install and uninstall

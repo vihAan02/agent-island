@@ -81,6 +81,20 @@ struct HookInstallerTests {
         #expect(count(first) == count(second))
     }
 
+    @Test("Hooks left by a moved app are spotted, and reinstalling repoints them")
+    func detectsMovedApp() throws {
+        let path = try temporarySettings(#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/say-done"}]}]}}"#)
+        defer { try? FileManager.default.removeItem(atPath: (path as NSString).deletingLastPathComponent) }
+
+        let old = "/Users/me/Desktop/AgentIsland.app/Contents/MacOS/agent-island-hook"
+        let new = "/Applications/AgentIsland.app/Contents/MacOS/agent-island-hook"
+        try HookInstaller.install(settingsPath: path, binaryPath: old, agent: .claude)
+        #expect(HookInstaller.installedCommands(settingsPath: path) == [old], "the user's own hook is not ours")
+
+        try HookInstaller.install(settingsPath: path, binaryPath: new, agent: .claude)
+        #expect(HookInstaller.installedCommands(settingsPath: path) == [new])
+    }
+
     @Test("Uninstalling leaves the file as it was found")
     func uninstallRestores() throws {
         let original = """

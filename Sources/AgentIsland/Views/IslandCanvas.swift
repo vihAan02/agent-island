@@ -245,7 +245,7 @@ struct IslandCanvas: View {
         )
     }
 
-    /// The signature for ultracode and Codex ultra: a full conic sweep in brand hues,
+    /// The signature for ultracode and Codex ultra: a full conic sweep in purples,
     /// a breathing bloom, and embers coming off the ring.
     private func drawAurora(
         session: AgentSession,
@@ -253,7 +253,7 @@ struct IslandCanvas: View {
         isActive: Bool,
         context: GraphicsContext
     ) {
-        let hues = IslandStyle.auroraHues(session.kind)
+        let hues = IslandStyle.ultraHues
         let breath = 0.5 + 0.5 * sin(clock * 1.7)
         let angle = Angle.degrees(isActive ? clock * 150 : 0)
         let center = CGPoint(x: rect.midX, y: rect.midY)

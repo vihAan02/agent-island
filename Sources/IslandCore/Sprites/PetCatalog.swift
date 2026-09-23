@@ -84,8 +84,10 @@ public struct PetCatalog: Sendable {
 
         func imagePath(key: String, compute: () -> String?) -> String? {
             lock.lock()
-            if let cached = imagePaths[key] { lock.unlock(); return cached }
+            let cached = imagePaths[key]
             lock.unlock()
+            // macOS can purge Caches at any time; a sheet that vanished is extracted again.
+            if let cached, FileManager.default.fileExists(atPath: cached) { return cached }
 
             let value = compute()
             lock.lock()
@@ -161,7 +163,9 @@ public struct PetCatalog: Sendable {
     /// Returns a decodable file for `petID`, extracting it from the app archive once.
     public func imagePath(for petID: String) -> String? {
         if let custom = customPets().first(where: { $0.id == petID }) { return custom.imagePath }
-        return Cache.shared.imagePath(key: "\(asarPath)#\(petID)") { extractBuiltIn(petID: petID) }
+        return Cache.shared.imagePath(key: "\(asarPath)#\(cacheDirectory)#\(petID)") {
+            extractBuiltIn(petID: petID)
+        }
     }
 
     private func extractBuiltIn(petID: String) -> String? {

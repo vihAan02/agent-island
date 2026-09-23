@@ -12,15 +12,26 @@ enum IslandStyle {
     static let error = Color(red: 230 / 255, green: 86 / 255, blue: 74 / 255)
     static let complete = Color(red: 88 / 255, green: 199 / 255, blue: 127 / 255)
     static let plan = Color(red: 157 / 255, green: 130 / 255, blue: 236 / 255)
+    /// Ultracode and Codex ultra: a saturated purple, well clear of the soft lavender
+    /// of a plan, and always moving, where the plan ring holds still.
+    static let ultra = Color(red: 0.66, green: 0.30, blue: 0.98)
+    static let ultraHues: [Color] = [
+        ultra,
+        Color(red: 0.86, green: 0.36, blue: 0.96),
+        Color(red: 0.46, green: 0.28, blue: 1.00),
+        Color(red: 0.94, green: 0.62, blue: 1.00),
+        ultra,
+    ]
 
     static func brand(_ kind: AgentKind) -> Color {
         kind == .claude ? claude : codex
     }
 
-    /// The ring color for a status. Working keeps the agent's own color.
+    /// The ring color for a status. Working keeps the agent's own color, or purple
+    /// at ultra effort.
     static func ring(for session: AgentSession) -> Color {
         switch session.status {
-        case .working: brand(session.kind)
+        case .working: session.effectiveEffort == .ultra ? ultra : brand(session.kind)
         case .question: question
         case .plan: plan
         case .error: error
@@ -29,8 +40,8 @@ enum IslandStyle {
         }
     }
 
-    /// Secondary hue for the ultra aurora, per agent.
-    static func auroraHues(_ kind: AgentKind) -> [Color] {
+    /// Each agent's own gradient, for the app icon.
+    static func brandHues(_ kind: AgentKind) -> [Color] {
         kind == .claude
             ? [claude, Color(red: 0.96, green: 0.76, blue: 0.35), Color(red: 0.90, green: 0.45, blue: 0.42), claude]
             : [codex, Color(red: 0.61, green: 0.45, blue: 0.95), Color(red: 0.36, green: 0.80, blue: 0.93), codex]

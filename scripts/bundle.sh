@@ -17,6 +17,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/AgentIsland" "$APP/Contents/MacOS/AgentIsland"
 cp "$BIN_DIR/agent-island-hook" "$APP/Contents/MacOS/agent-island-hook"
 
+# The icon is drawn by the app itself, then packed by iconutil.
+ICONSET="$(mktemp -d)/AppIcon.iconset"
+"$BIN_DIR/AgentIsland" --render-icon "$ICONSET" >/dev/null
+iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" "$ICONSET"
+rm -rf "$(dirname "$ICONSET")"
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -28,6 +34,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <string>Agent Island</string>
     <key>CFBundleIdentifier</key>
     <string>com.agentisland.app</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleExecutable</key>
     <string>AgentIsland</string>
     <key>CFBundlePackageType</key>
@@ -38,7 +46,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
-    <!-- Menu bar only: no Dock icon, no app switcher entry. -->
+    <!-- Menu bar only: no Dock icon or app switcher entry, except while the
+         main window is open (the app switches itself to a regular app then). -->
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>

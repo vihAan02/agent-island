@@ -1,4 +1,5 @@
 import AppKit
+import IslandCore
 import SwiftUI
 
 /// Where the notch is, and where the circles sit beside it.
@@ -93,26 +94,30 @@ struct NotchGeometry: Equatable {
         )
     }
 
-    /// Slot centres alternate right, left, right, left, so the island stays balanced.
-    func slotCenter(index: Int) -> CGPoint {
-        let side = index % 2 == 0 ? 1.0 : -1.0
-        let rank = CGFloat(index / 2)
-        let step = circleDiameter + circleSpacing
-        let firstOffset = gapFromNotch + circleDiameter / 2
-        let x = side > 0
-            ? notchRect.maxX + firstOffset + rank * step
-            : notchRect.minX - firstOffset - rank * step
+    /// The centre of the circle `rank` places out from the notch on one side.
+    func slotCenter(side: IslandSide, rank: Int) -> CGPoint {
+        let offset = gapFromNotch + circleDiameter / 2 + CGFloat(rank) * (circleDiameter + circleSpacing)
+        let x = side == .right ? notchRect.maxX + offset : notchRect.minX - offset
         return CGPoint(x: x, y: notchRect.midY)
     }
 
-    /// Where a circle starts and ends up: tucked inside the notch wall, then out beside it.
-    func slotOrigin(index: Int) -> CGPoint {
-        let side = index % 2 == 0 ? 1.0 : -1.0
-        let x = side > 0
+    /// Where a circle hides: tucked just inside that side's notch wall.
+    func slotOrigin(side: IslandSide) -> CGPoint {
+        let x = side == .right
             ? notchRect.maxX - circleDiameter * 0.35
             : notchRect.minX + circleDiameter * 0.35
         return CGPoint(x: x, y: notchRect.midY)
     }
 
-    func isOnRightSide(index: Int) -> Bool { index % 2 == 0 }
+    /// Which side of the notch a point is on.
+    func side(for x: CGFloat) -> IslandSide {
+        x < notchRect.midX ? .left : .right
+    }
+
+    /// How many places out from the notch a point is on its side, as a fraction:
+    /// 0 is the first place, 1 the second, negative is inside the notch.
+    func fractionalRank(for x: CGFloat, side: IslandSide) -> CGFloat {
+        let distance = side == .right ? x - notchRect.maxX : notchRect.minX - x
+        return (distance - gapFromNotch - circleDiameter / 2) / (circleDiameter + circleSpacing)
+    }
 }

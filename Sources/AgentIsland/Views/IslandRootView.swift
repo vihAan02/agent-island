@@ -34,14 +34,8 @@ struct IslandContent: View {
                 hoveredID: hoveredID
             )
 
-            // A click target per circle; the drawing itself is in the canvas above.
-            ForEach(layouts) { layout in
-                Color.clear
-                    .frame(width: layout.diameter + 6, height: layout.diameter + 6)
-                    .contentShape(Circle())
-                    .position(layout.center)
-                    .onTapGesture { onTap?(layout.id) }
-            }
+            // Presses on circles are handled by the panel's hosting view, so they can
+            // become drags; only the card takes SwiftUI taps.
 
             if let expanded, let cardRect {
                 ExpandedCard(session: expanded.session, clock: clock)
@@ -70,7 +64,7 @@ struct IslandRootView: View {
             let now = timeline.date
             IslandContent(
                 geometry: geometry,
-                layouts: IslandLayout.layouts(for: model.bubbles, geometry: geometry, now: now),
+                layouts: IslandLayout.layouts(for: model.bubbles, geometry: geometry, now: now, drag: model.liveDrag),
                 clock: now.timeIntervalSince(Self.epoch),
                 now: now,
                 petID: model.settings.codexPetID,

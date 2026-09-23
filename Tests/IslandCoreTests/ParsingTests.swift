@@ -37,6 +37,16 @@ struct HookParsingTests {
         #expect(event.effort == .ultra)
     }
 
+    @Test("A Codex hook ignores a CLAUDE_EFFORT it inherited")
+    func codexIgnoresClaudeEffort() throws {
+        let json = """
+            {"agent":"codex","env":{"CLAUDE_EFFORT":"xhigh"},
+             "payload":{"hook_event_name":"Stop","session_id":"t"}}
+            """
+        let event = try #require(HookEvent.decode(envelope: Data(json.utf8)))
+        #expect(event.effort == nil)
+    }
+
     @Test("A Codex envelope decodes with the same schema")
     func decodesCodexEnvelope() throws {
         let json = """

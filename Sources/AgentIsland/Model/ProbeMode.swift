@@ -2,32 +2,42 @@ import AppKit
 import Foundation
 import IslandCore
 
-/// `AgentIsland --probe` runs the watchers for a few seconds with no window and
-/// prints what they found. It is the quickest way to see whether sessions are being
-/// detected, and what status, effort, and titles they carry.
+/// `AgentIsland --probe [seconds]` runs the watchers for a few seconds with no window
+/// and prints what they found. It is the quickest way to see whether sessions are
+/// being detected, and what status, effort, and titles they carry.
+///
+/// After the first second it only prints when the picture changes, so a long probe
+/// alongside `scripts/simulate.sh` reads as a list of transitions.
 @MainActor
 enum ProbeMode {
-    static func run() async {
+    static func run(seconds: Int = 6) async {
         let model = IslandModel(settings: AppEnvironment.shared.settings)
         model.start()
         reportScreen(model)
         print("watching \(IslandPaths.claudeSessions) and \(IslandPaths.codexSessions)")
         print("hook socket: \(IslandPaths.socketPath)")
-        print("claude hooks installed: \(AppEnvironment.shared.settings.claudeHooksInstalled)")
+        print("claude hooks: \(HookManager().state(for: .claude))")
 
-        for step in 1...6 {
-            try? await Task.sleep(for: .seconds(1))
-            print("\n[\(step)s] \(model.bubbles.count) circle(s)")
-            for bubble in model.bubbles {
+        var lastReport: [String] = []
+        let ticks = max(1, seconds) * 4
+        for tick in 1...ticks {
+            try? await Task.sleep(for: .milliseconds(250))
+            let report = model.bubbles.map { bubble in
                 let session = bubble.session
-                print(
-                    "  slot \(bubble.slot)  \(session.kind.rawValue)  \(session.status.rawValue)"
-                        + "  effort=\(session.effortLabel)"
-                        + "  repo=\(session.repo)"
-                        + "  title=\(session.displayTitle)"
-                        + (session.detail.map { "  detail=\($0)" } ?? "")
-                )
+                let state = session.isRetiring ? " (leaving)" : bubble.isRetracting ? " (tucked)" : ""
+                let place = bubble.side.map { "\($0.rawValue) \(bubble.rank)" } ?? "waiting"
+                return "  \(place)  \(session.kind.rawValue)  \(session.status.rawValue)\(state)"
+                    + "  effort=\(session.effortLabel)"
+                    + "  repo=\(session.repo)"
+                    + "  title=\(session.displayTitle)"
+                    + (session.detail.map { "  detail=\($0)" } ?? "")
             }
+            let header = "\(report.count) circle(s), animating: \(model.animationMode)"
+            guard tick == 4 || (tick > 4 && [header] + report != lastReport) else { continue }
+            lastReport = [header] + report
+            print(String(format: "\n[%.2fs] ", Double(tick) / 4) + header)
+            report.forEach { print($0) }
+            fflush(stdout)
         }
         NSApp.terminate(nil)
     }
@@ -48,9 +58,9 @@ enum ProbeMode {
                 + "  circle=\(Int(geometry.circleDiameter))pt"
         )
         print("panel frame \(geometry.panelFrame)")
-        for slot in 0..<4 {
-            let center = geometry.slotCenter(index: slot)
-            print("  slot \(slot) \(geometry.isOnRightSide(index: slot) ? "right" : "left ") center=(\(Int(center.x)), \(Int(center.y)))")
+        for side in IslandSide.allCases {
+            let centers = (0..<NotchGeometry.maximumPerSide).map { geometry.slotCenter(side: side, rank: $0) }
+            print("  \(side.rawValue) places: " + centers.map { "(\(Int($0.x)), \(Int($0.y)))" }.joined(separator: " "))
         }
     }
 }

@@ -7,6 +7,15 @@ public enum AgentEvent: Sendable {
     case claudeRegistry([ClaudeRegistryEntry])
     case claudeTranscript(sessionID: String, signal: TranscriptSignal)
     case codex(CodexEvent)
+
+    /// Which agent the event is about.
+    public var kind: AgentKind {
+        switch self {
+        case .hook(let hook): hook.kind
+        case .claudeRegistry, .claudeTranscript: .claude
+        case .codex: .codex
+        }
+    }
 }
 
 /// A signal read out of a Claude transcript. Used when hooks are not installed,
@@ -107,7 +116,9 @@ public struct HookEvent: Sendable, Equatable {
         guard !sessionID.isEmpty else { return nil }
 
         var effort = EffortTier.parse((payload["effort"] as? [String: Any])?["level"] as? String)
-        if effort == nil { effort = EffortTier.parse(env["CLAUDE_EFFORT"]) }
+        // Only Claude sets this. A Codex run started from a Claude Code shell inherits it,
+        // and it says nothing about Codex's own effort.
+        if effort == nil, kind == .claude { effort = EffortTier.parse(env["CLAUDE_EFFORT"]) }
 
         let toolName = payload["tool_name"] as? String
         let toolSummary = ToolSummary.describe(toolName: toolName, toolInput: payload["tool_input"])

@@ -7,13 +7,27 @@ import Observation
 struct Bubble: Identifiable, Equatable {
     var id: String
     var session: AgentSession
-    var slot: Int
+    /// The side it sits on, or nil while it waits inside the notch for room.
+    var side: IslandSide?
+    /// Places out from the notch, among the circles showing on that side.
+    var rank: Int
     /// When the circle started sliding out of the notch.
     var appearedAt: Date
     /// When it started sliding back in, if it is on the way out.
     var retractingSince: Date?
+    /// Its resting place beside the notch, on springs, so circles glide when they
+    /// make room for one another or land after a drag.
+    var x: SpringMotion
+    var y: SpringMotion
 
     var isRetracting: Bool { retractingSince != nil }
+
+    /// Where it is heading, or already sits.
+    var restingCenter: CGPoint { CGPoint(x: x.to, y: y.to) }
+
+    func isSliding(at now: Date) -> Bool {
+        !x.isSettled(at: now) || !y.isSettled(at: now)
+    }
 }
 
 /// How hard the island is animating right now.
@@ -49,7 +63,7 @@ enum AnimationMode: Int, Comparable, Equatable {
 /// Owns the reducer, the watchers, and the display state of the island.
 @MainActor
 @Observable
-final class IslandModel {
+final class IslandModel: IslandPointerTarget {
     private(set) var bubbles: [Bubble] = []
     private(set) var animationMode: AnimationMode = .paused
     private(set) var hookedSessionsSeen = false
@@ -77,12 +91,33 @@ final class IslandModel {
     var onLayoutChanged: (([CGRect]) -> Void)?
 
     private var reducer = SessionReducer()
-    private var slots: [String: Int] = [:]
-    private var lastStatus: [String: AgentStatus] = [:]
+    /// Which circles sit on which side, in order out from the notch.
+    private var arrangement = IslandArrangement(capacity: NotchGeometry.maximumPerSide)
     /// True while the pointer is at the notch, which pulls tucked circles back out.
     private var isPeeking = false
-    private var appearance: [String: Date] = [:]
-    private var retracting: [String: Date] = [:]
+    private var motion: [String: CircleMotion] = [:]
+    private var slides: [String: (x: SpringMotion, y: SpringMotion)] = [:]
+
+    /// A press on a circle, which becomes a drag once the pointer moves far enough.
+    private struct Press {
+        var id: String
+        var start: CGPoint
+        /// From the pointer to the circle's centre, so the circle does not jump.
+        var grab: CGSize
+        var isDragging = false
+        var samples: [(time: TimeInterval, point: CGPoint)] = []
+    }
+
+    private var press: Press?
+    /// Where the others would go if the dragged circle were dropped right now.
+    private var dragPreview: IslandArrangement?
+    /// A circle just let go of, to be thrown from where it was at the speed it had.
+    private var released: (id: String, center: CGPoint, velocity: CGVector)?
+
+    /// The dragged circle's position, read by the island on every frame. It is not
+    /// observed: while something is dragged the island redraws every frame anyway,
+    /// and observing it would re-run the view for every mouse event as well.
+    @ObservationIgnored private(set) var liveDrag: IslandDrag?
 
     private var hookServer: HookSocketServer?
     private var registryWatcher: ClaudeRegistryWatcher?
@@ -94,7 +129,7 @@ final class IslandModel {
     private let demo: DemoDriver?
 
     /// How long the slide-back-into-the-notch animation lasts before the circle is dropped.
-    private let retractDuration: TimeInterval = 0.55
+    private let retractDuration = IslandLayout.retractDuration
 
     init(settings: IslandSettings = IslandSettings(), demoMode: Bool = false) {
         self.settings = settings
@@ -105,7 +140,11 @@ final class IslandModel {
 
     func start() {
         startHookServer()
-        startWatchers()
+        settings.onWatchChanged = { [weak self] kind, on in
+            self?.setWatching(kind, on)
+        }
+        setWatching(.claude, settings.watchClaude)
+        setWatching(.codex, settings.watchCodex)
         startTicker()
         if let demo {
             demo.start { [weak self] event in
@@ -126,10 +165,25 @@ final class IslandModel {
         }
     }
 
-    private func startWatchers() {
+    /// Starts or stops everything that watches one agent. Called at launch and
+    /// whenever a Watch toggle in the menu flips.
+    ///
+    /// Switching an agent off sends its circles back into the notch. Switching it on
+    /// starts fresh watchers, whose first scan brings live sessions straight back.
+    private func setWatching(_ kind: AgentKind, _ on: Bool) {
+        // The demo drives the island on its own and never watches anything real.
         guard demo == nil else { return }
+        switch kind {
+        case .claude: setClaudeWatching(on)
+        case .codex: setCodexWatching(on)
+        }
+    }
 
-        if settings.watchClaude {
+    private func setClaudeWatching(_ on: Bool) {
+        if on {
+            guard registryWatcher == nil else { return }
+            reducer.dropRetiring(kind: .claude)
+
             let registry = ClaudeRegistryWatcher { [weak self] event in
                 Task { @MainActor in self?.handle(event) }
             }
@@ -141,15 +195,33 @@ final class IslandModel {
             }
             transcriptWatcher = transcripts
             Task { await transcripts.start() }
+            syncTranscriptFollowing()
+        } else {
+            if let registryWatcher { Task { await registryWatcher.stop() } }
+            if let transcriptWatcher { Task { await transcriptWatcher.stop() } }
+            registryWatcher = nil
+            transcriptWatcher = nil
+            reducer.retireAll(kind: .claude)
         }
+        rebuild()
+    }
 
-        if settings.watchCodex {
+    private func setCodexWatching(_ on: Bool) {
+        if on {
+            guard codexWatcher == nil else { return }
+            reducer.dropRetiring(kind: .codex)
+
             let codex = CodexRolloutWatcher { [weak self] event in
                 Task { @MainActor in self?.handle(event) }
             }
             codexWatcher = codex
             Task { await codex.start() }
+        } else {
+            if let codexWatcher { Task { await codexWatcher.stop() } }
+            codexWatcher = nil
+            reducer.retireAll(kind: .codex)
         }
+        rebuild()
     }
 
     private func startTicker() {
@@ -166,6 +238,9 @@ final class IslandModel {
 
     func handle(_ event: AgentEvent) {
         Diagnostics.count("event")
+        // Hooks keep arriving whatever the toggles say, and a watcher that was just
+        // stopped can still have an event in flight.
+        guard demo != nil || settings.isWatching(event.kind) else { return }
         if case .hook = event { hookedSessionsSeen = true }
         reducer.apply(event)
         syncTranscriptFollowing()
@@ -176,14 +251,12 @@ final class IslandModel {
         reducer.tick()
         let now = Date()
         // Only a session that is actually gone gets dropped. A circle that merely
-        // tucked itself away keeps its slot and its session.
-        for (id, since) in retracting where now.timeIntervalSince(since) > retractDuration {
-            guard reducer.session(id: id)?.isRetiring == true else { continue }
+        // tucked itself away keeps its place and its session.
+        for (id, circle) in motion where circle.isHidden(now: now, retractDuration: retractDuration) {
+            guard reducer.session(id: id)?.isRetiring == true, press?.id != id else { continue }
             reducer.drop(id: id)
-            retracting.removeValue(forKey: id)
-            slots.removeValue(forKey: id)
-            appearance.removeValue(forKey: id)
-            lastStatus.removeValue(forKey: id)
+            motion.removeValue(forKey: id)
+            slides.removeValue(forKey: id)
         }
         rebuild()
     }
@@ -193,18 +266,35 @@ final class IslandModel {
     /// Pointing anywhere at the notch peeks: every tucked circle slides back out for
     /// as long as the pointer is there.
     func setPointer(_ point: CGPoint?) {
+        // A drag owns the pointer until it lets go.
+        guard press?.isDragging != true else { return }
         let hit = point.flatMap { hitTest($0) }
         if hoveredID != hit {
             hoveredID = hit
             expandedID = hit
         }
 
-        let peekZone = geometry.notchRect.insetBy(dx: -geometry.circleDiameter, dy: -4)
-        let peeking = point.map { peekZone.contains($0) } ?? false
+        let peeking = point.map { isInPeekZone($0) || hit != nil } ?? false
         if peeking != isPeeking {
             isPeeking = peeking
             rebuild()
         }
+    }
+
+    /// Pointing just beside the notch starts a peek. Once the circles are out, the
+    /// zone widens to cover all of them, so the pointer can travel out to the far
+    /// ones without the island tucking them away underneath it.
+    private func isInPeekZone(_ point: CGPoint) -> Bool {
+        let notch = geometry.notchRect
+        var zone = notch.insetBy(dx: -geometry.circleDiameter, dy: 0)
+        if isPeeking {
+            for bubble in bubbles where bubble.side != nil {
+                let center = bubble.restingCenter
+                zone = zone.union(CGRect(x: center.x, y: center.y, width: 0, height: 0)
+                    .insetBy(dx: -geometry.circleDiameter, dy: -geometry.circleDiameter / 2))
+            }
+        }
+        return CGRect(x: zone.minX, y: 0, width: zone.width, height: notch.maxY + 4).contains(point)
     }
 
     /// Follows the transcript of every live Claude session, and forgets the rest.
@@ -218,92 +308,117 @@ final class IslandModel {
         }
     }
 
-    /// Recomputes slots and the bubble list from the reducer's sessions.
+    /// Recomputes places, springs, and the bubble list from the reducer's sessions.
     private func rebuild() {
         Diagnostics.count("rebuild")
         let now = Date()
         let sessions = reducer.visibleSessions
-        var next: [Bubble] = []
-        var liveIDs: Set<String> = []
+        let liveIDs = Set(sessions.map(\.id))
+        let tuckAfter = settings.visibility == .popThenTuck ? settings.tuckAfter : nil
 
+        // Keep the arrangement in step with the sessions: newcomers go next to the
+        // notch on the preferred side, and the gone make room.
+        arrangement.preferredSide = settings.newCircleSide
+        for id in arrangement.left + arrangement.right + arrangement.waiting where !liveIDs.contains(id) {
+            arrangement.remove(id)
+        }
+        for session in sessions where !arrangement.contains(session.id) {
+            arrangement.add(session.id)
+        }
+
+        // Retiring or tucking slides a circle in; news, a peek, or switching tucking
+        // off brings it back out.
+        var occupying: Set<String> = []
         for session in sessions {
-            liveIDs.insert(session.id)
-
-            if session.isRetiring, retracting[session.id] == nil {
-                retracting[session.id] = now
+            let held = press?.id == session.id
+            let tuck = !held && CircleMotion.shouldTuck(session, tuckAfter: tuckAfter, isPeeking: isPeeking, now: now)
+            var circle = CircleMotion.advance(
+                motion[session.id],
+                session: session,
+                tuck: tuck,
+                now: now,
+                retractDuration: retractDuration
+            )
+            // A circle let out of the notch once there is room emerges like a new one.
+            let wasWaiting = bubbles.first { $0.id == session.id }.map { $0.side == nil } ?? false
+            if wasWaiting, arrangement.side(of: session.id) != nil, !circle.isRetracting {
+                circle.appearedAt = now
             }
+            motion[session.id] = circle
+            if !circle.isHidden(now: now, retractDuration: retractDuration) { occupying.insert(session.id) }
+        }
 
-            let slot = slots[session.id] ?? assignSlot(to: session.id)
-            if appearance[session.id] == nil { appearance[session.id] = now }
+        // Places count only the circles actually showing, so the rest close up
+        // around a tucked one. While dragging, the others make room for the drop.
+        let placement = dragPreview ?? arrangement
+        var next: [Bubble] = []
+        for session in sessions {
+            let id = session.id
+            let circle = motion[id] ?? CircleMotion(appearedAt: now)
+            let side = placement.side(of: id)
+            let rank = side.map { side in
+                placement.ids(on: side).prefix { $0 != id }.filter { occupying.contains($0) }.count
+            } ?? 0
 
-            // Anything new to report pops the circle back out.
-            if lastStatus[session.id] != session.status {
-                lastStatus[session.id] = session.status
-                if !session.isRetiring, retracting[session.id] != nil {
-                    retracting[session.id] = nil
-                    appearance[session.id] = now
+            let target = side.map { geometry.slotCenter(side: $0, rank: rank) } ?? geometry.notchRect.center
+            var slide = slides[id] ?? (x: SpringMotion(at: target.x, now: now), y: SpringMotion(at: target.y, now: now))
+
+            if let released, released.id == id {
+                // Thrown from where it was let go, at the speed it had.
+                slide.x.release(from: released.center.x, velocity: released.velocity.dx, to: target.x, at: now)
+                slide.y.release(from: released.center.y, velocity: released.velocity.dy, to: target.y, at: now)
+            } else if slide.x.to != target.x || slide.y.to != target.y {
+                if occupying.contains(id) {
+                    slide.x.retarget(to: target.x, at: now)
+                    slide.y.retarget(to: target.y, at: now)
+                } else {
+                    // Nobody sees a hidden circle move; it just comes out in its new place.
+                    slide.x.snap(to: target.x, at: now)
+                    slide.y.snap(to: target.y, at: now)
                 }
             }
-
-            if shouldTuck(session, now: now) {
-                if retracting[session.id] == nil { retracting[session.id] = now }
-            } else if !session.isRetiring, isPeeking, retracting[session.id] != nil {
-                // Peeking pulls a tucked circle back out.
-                retracting[session.id] = nil
-                appearance[session.id] = now
-            }
-
-            let appeared = appearance[session.id] ?? now
+            slides[id] = slide
 
             next.append(
                 Bubble(
-                    id: session.id,
+                    id: id,
                     session: session,
-                    slot: slot,
-                    appearedAt: appeared,
-                    retractingSince: retracting[session.id]
+                    side: side,
+                    rank: rank,
+                    appearedAt: circle.appearedAt,
+                    retractingSince: circle.retractingSince,
+                    x: slide.x,
+                    y: slide.y
                 )
             )
         }
+        released = nil
 
         // Sessions the reducer dropped outright.
-        for id in slots.keys where !liveIDs.contains(id) {
-            slots.removeValue(forKey: id)
-            appearance.removeValue(forKey: id)
-            retracting.removeValue(forKey: id)
+        for id in Set(motion.keys).union(slides.keys) where !liveIDs.contains(id) {
+            motion.removeValue(forKey: id)
+            slides.removeValue(forKey: id)
         }
+        if let press, !liveIDs.contains(press.id) { cancelDrag() }
 
-        bubbles = next.sorted { $0.slot < $1.slot }
+        bubbles = next.sorted { ($0.side?.sortKey ?? 2, $0.rank) < ($1.side?.sortKey ?? 2, $1.rank) }
         updateAnimationMode()
         if let hoveredID, !liveIDs.contains(hoveredID) { self.hoveredID = nil }
         if let expandedID, !liveIDs.contains(expandedID) { self.expandedID = nil }
         publishLayout()
     }
 
-    /// In "pop, then tuck back" mode a circle slides away again once its news is old,
-    /// unless it still wants an answer from you.
-    private func shouldTuck(_ session: AgentSession, now: Date) -> Bool {
-        guard settings.visibility == .popThenTuck else { return false }
-        guard !session.isRetiring, !isPeeking else { return false }
-        guard !session.status.demandsAttention else { return false }
-        return now.timeIntervalSince(session.statusChangedAt) > settings.tuckAfter
-    }
-
-    private func assignSlot(to id: String) -> Int {
-        let taken = Set(slots.values)
-        var candidate = 0
-        while taken.contains(candidate) { candidate += 1 }
-        slots[id] = candidate
-        return candidate
-    }
-
     // MARK: - Hit testing
 
     /// Rects, in panel coordinates, that should receive clicks right now.
     var interactiveRects: [CGRect] {
+        // While dragging, the panel holds on to the pointer wherever it goes, so the
+        // drag is never handed to whatever is underneath.
+        if press?.isDragging == true { return [geometry.bandRect().insetBy(dx: -10_000, dy: -10_000)] }
+
         var rects: [CGRect] = bubbles.compactMap { bubble in
-            guard bubble.slot / 2 < NotchGeometry.maximumPerSide, !bubble.isRetracting else { return nil }
-            let center = geometry.slotCenter(index: bubble.slot)
+            guard bubble.side != nil, !bubble.isRetracting else { return nil }
+            let center = bubble.restingCenter
             let diameter = geometry.circleDiameter
             return CGRect(
                 x: center.x - diameter / 2 - 3,
@@ -318,12 +433,7 @@ final class IslandModel {
 
     /// The circle or open card under a point, if any.
     func hitTest(_ point: CGPoint) -> String? {
-        for bubble in bubbles {
-            guard bubble.slot / 2 < NotchGeometry.maximumPerSide, !bubble.isRetracting else { continue }
-            let center = geometry.slotCenter(index: bubble.slot)
-            let radius = geometry.circleDiameter / 2 + 4
-            if hypot(point.x - center.x, point.y - center.y) <= radius { return bubble.id }
-        }
+        if let id = circle(at: point) { return id }
         // Keep the card open while the pointer is on it.
         if let expandedID, let card = cardRect(for: expandedID), card.contains(point) {
             return expandedID
@@ -331,14 +441,42 @@ final class IslandModel {
         return nil
     }
 
+    /// The circle under a point, if any.
+    func circle(at point: CGPoint) -> String? {
+        let radius = geometry.circleDiameter / 2 + 4
+        return bubbles.first { bubble in
+            guard bubble.side != nil, !bubble.isRetracting else { return false }
+            let center = bubble.restingCenter
+            return hypot(point.x - center.x, point.y - center.y) <= radius
+        }?.id
+    }
+
     func cardRect(for id: String) -> CGRect? {
-        guard let bubble = bubbles.first(where: { $0.id == id }) else { return nil }
-        let center = geometry.slotCenter(index: bubble.slot)
-        return IslandLayout.cardRect(around: center.x, geometry: geometry)
+        guard let bubble = bubbles.first(where: { $0.id == id }), bubble.side != nil else { return nil }
+        return IslandLayout.cardRect(around: bubble.restingCenter.x, geometry: geometry)
     }
 
     private func publishLayout() {
         onLayoutChanged?(interactiveRects)
+    }
+
+    // MARK: - Reading
+
+    /// Sessions with a circle, leaving out the ones on their way out.
+    var liveSessions: [AgentSession] {
+        bubbles.map(\.session).filter { !$0.isRetiring }
+    }
+
+    /// A one-line roll call, for the menu and the window.
+    var summary: String {
+        let live = liveSessions
+        if live.isEmpty { return "No agents running" }
+        let working = live.filter { $0.status == .working }.count
+        let waiting = live.filter { $0.status == .question }.count
+        var parts = ["\(live.count) session\(live.count == 1 ? "" : "s")"]
+        if working > 0 { parts.append("\(working) working") }
+        if waiting > 0 { parts.append("\(waiting) waiting for you") }
+        return parts.joined(separator: " \u{00b7} ")
     }
 
     // MARK: - Actions
@@ -353,6 +491,140 @@ final class IslandModel {
         SessionOpener.open(session)
     }
 
+    // MARK: - Dragging
+
+    /// How far the pointer has to travel before a press becomes a drag.
+    private let dragThreshold: CGFloat = 4
+
+    /// The pointer went down on a circle.
+    func pressBegan(on id: String, at point: CGPoint) {
+        guard let bubble = bubbles.first(where: { $0.id == id }), bubble.side != nil else { return }
+        let now = Date()
+        let center = CGPoint(x: bubble.x.value(at: now), y: bubble.y.value(at: now))
+        press = Press(
+            id: id,
+            start: point,
+            grab: CGSize(width: center.x - point.x, height: center.y - point.y),
+            samples: [(now.timeIntervalSinceReferenceDate, point)]
+        )
+    }
+
+    /// The pointer moved while down. Past a few points, the circle comes with it
+    /// and the others make room where it would land.
+    func pressMoved(to point: CGPoint) {
+        guard var press else { return }
+        let time = Date().timeIntervalSinceReferenceDate
+        press.samples.append((time, point))
+        press.samples.removeAll { time - $0.time > 0.12 }
+
+        var startedNow = false
+        if !press.isDragging {
+            guard hypot(point.x - press.start.x, point.y - press.start.y) >= dragThreshold else {
+                self.press = press
+                return
+            }
+            press.isDragging = true
+            startedNow = true
+        }
+        self.press = press
+        if startedNow {
+            hoveredID = nil
+            expandedID = nil
+        }
+
+        let center = dragCenter(for: point, press: press)
+        liveDrag = IslandDrag(id: press.id, center: center)
+
+        let preview = arrangementForDrop(of: press.id, at: center.x)
+        if preview != dragPreview {
+            dragPreview = preview
+            rebuild()
+        } else if startedNow {
+            updateAnimationMode()
+            publishLayout()
+        }
+    }
+
+    /// The pointer came up. A press that never moved is a click; a drag lands the
+    /// circle on the side it was let go over, thrown with the speed it had.
+    func pressEnded(at point: CGPoint) {
+        guard let press else { return }
+        self.press = nil
+
+        guard press.isDragging else {
+            open(id: press.id)
+            return
+        }
+
+        let center = dragCenter(for: point, press: press)
+        let velocity = releaseVelocity(press.samples)
+        // A flick carries on a little way, the way a thrown thing would.
+        let projected = center.x + velocity.dx * 0.15
+        if let landed = arrangementForDrop(of: press.id, at: projected) {
+            arrangement = landed
+        }
+
+        dragPreview = nil
+        liveDrag = nil
+        released = (press.id, center, velocity)
+        rebuild()
+    }
+
+    /// Lets go of a drag without moving anything, as when its session ends mid-drag.
+    private func cancelDrag() {
+        press = nil
+        dragPreview = nil
+        liveDrag = nil
+    }
+
+    /// The arrangement if the dragged circle landed at `x`, or nil when that side is full.
+    private func arrangementForDrop(of id: String, at x: CGFloat) -> IslandArrangement? {
+        let side = geometry.side(for: x)
+        let rank = max(0, Int(geometry.fractionalRank(for: x, side: side).rounded()))
+
+        // Places count circles showing; the arrangement also holds tucked ones.
+        let showing = Set(bubbles.filter { !$0.isRetracting }.map(\.id))
+        let others = arrangement.ids(on: side).filter { $0 != id }
+        var index = others.count
+        var seen = 0
+        for (position, other) in others.enumerated() where showing.contains(other) {
+            if seen == rank { index = position; break }
+            seen += 1
+        }
+        return arrangement.moving(id, to: side, at: index)
+    }
+
+    /// Where the dragged circle is drawn: under the pointer, held to the strip with
+    /// some give at the edges, like rubber.
+    private func dragCenter(for point: CGPoint, press: Press) -> CGPoint {
+        let raw = CGPoint(x: point.x + press.grab.width, y: point.y + press.grab.height)
+        let radius = geometry.circleDiameter / 2
+        let low = radius + 2
+        let high = geometry.panelFrame.width - radius - 2
+
+        var x = raw.x
+        if x < low { x = low - 10 * tanh((low - x) / 30) }
+        if x > high { x = high + 10 * tanh((x - high) / 30) }
+        let rest = geometry.notchRect.midY
+        let y = rest + 9 * tanh((raw.y - rest) / 28)
+        return CGPoint(x: x, y: y)
+    }
+
+    /// Pointer speed over the last few samples, in points per second.
+    private func releaseVelocity(_ samples: [(time: TimeInterval, point: CGPoint)]) -> CGVector {
+        guard let first = samples.first, let last = samples.last, last.time - first.time > 0.008 else {
+            return .zero
+        }
+        let dt = last.time - first.time
+        func clamp(_ value: CGFloat) -> CGFloat { min(max(value, -2500), 2500) }
+        return CGVector(
+            // Carry most of the throw, not all of it: the Dynamic Island is restrained.
+            dx: clamp((last.point.x - first.point.x) / dt) * 0.6,
+            // Vertical throw only nudges; the strip is shallow.
+            dy: clamp((last.point.y - first.point.y) / dt) * 0.3
+        )
+    }
+
     /// How long after a status change the island keeps animating at full ambient rate.
     private let livelyWindow: TimeInterval = 25
 
@@ -360,9 +632,20 @@ final class IslandModel {
     private func currentAnimationMode() -> AnimationMode {
         let now = Date()
         var mode = AnimationMode.paused
+        if press?.isDragging == true { return .emerging }
 
         for bubble in bubbles {
-            if bubble.isRetracting || now.timeIntervalSince(bubble.appearedAt) < 1.2 {
+            // Gliding to make room, or landing after a drag.
+            if bubble.side != nil, bubble.retractingSince == nil, bubble.isSliding(at: now) {
+                return .emerging
+            }
+            if let since = bubble.retractingSince {
+                // Sliding in deserves every frame. Once it is hidden in the notch,
+                // a tucked circle is as still as an empty one.
+                if now.timeIntervalSince(since) < retractDuration { return .emerging }
+                continue
+            }
+            if now.timeIntervalSince(bubble.appearedAt) < 1.2 {
                 return .emerging
             }
             let age = now.timeIntervalSince(bubble.session.statusChangedAt)
@@ -385,5 +668,12 @@ final class IslandModel {
         let mode = currentAnimationMode()
         if mode != animationMode { animationMode = mode }
     }
+}
 
+private extension IslandSide {
+    var sortKey: Int { self == .left ? 0 : 1 }
+}
+
+private extension CGRect {
+    var center: CGPoint { CGPoint(x: midX, y: midY) }
 }

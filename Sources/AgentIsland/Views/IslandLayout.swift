@@ -6,12 +6,15 @@ import SwiftUI
 struct BubbleLayout: Identifiable, Equatable {
     var id: String
     var session: AgentSession
-    var slot: Int
+    var side: IslandSide
+    /// Places out from the notch, among the circles showing on its side.
+    var rank: Int
     var center: CGPoint
     var diameter: CGFloat
     /// 0 = fully tucked inside the notch, 1 = fully out.
     var progress: Double
-    var isOnRightSide: Bool
+
+    var isOnRightSide: Bool { side == .right }
 
     /// Content fades in only once the circle has pulled clear of the notch.
     var contentOpacity: Double { Spring.smoothstep(progress, from: 0.45, to: 0.85) }
@@ -26,6 +29,12 @@ struct BubbleLayout: Identifiable, Equatable {
     }
 }
 
+/// The circle under the pointer while it is being dragged.
+struct IslandDrag: Equatable {
+    var id: String
+    var center: CGPoint
+}
+
 /// Turns bubbles plus a clock into laid-out circles.
 enum IslandLayout {
     static let emergeResponse: Double = 0.5
@@ -35,29 +44,46 @@ enum IslandLayout {
     static func layouts(
         for bubbles: [Bubble],
         geometry: NotchGeometry,
-        now: Date
+        now: Date,
+        drag: IslandDrag? = nil
     ) -> [BubbleLayout] {
-        bubbles.compactMap { bubble in
-            // Beyond the per-side cap the circle stays inside the notch.
-            guard bubble.slot / 2 < NotchGeometry.maximumPerSide else { return nil }
+        let laidOut = bubbles.compactMap { bubble -> BubbleLayout? in
+            // A circle with no room on either side stays inside the notch.
+            guard let side = bubble.side else { return nil }
 
+            if let drag, drag.id == bubble.id {
+                return BubbleLayout(
+                    id: bubble.id,
+                    session: bubble.session,
+                    side: side,
+                    rank: bubble.rank,
+                    center: drag.center,
+                    diameter: geometry.circleDiameter,
+                    progress: 1
+                )
+            }
+
+            // Out of the notch wall along the emerge spring, towards a resting place
+            // that has its own spring, so circles glide when they make room.
             let progress = progress(for: bubble, now: now)
-            let start = geometry.slotOrigin(index: bubble.slot)
-            let end = geometry.slotCenter(index: bubble.slot)
-            let center = CGPoint(
-                x: start.x + (end.x - start.x) * progress,
-                y: start.y + (end.y - start.y) * progress
-            )
+            let start = geometry.slotOrigin(side: side)
+            let end = CGPoint(x: bubble.x.value(at: now), y: bubble.y.value(at: now))
             return BubbleLayout(
                 id: bubble.id,
                 session: bubble.session,
-                slot: bubble.slot,
-                center: center,
+                side: side,
+                rank: bubble.rank,
+                center: CGPoint(
+                    x: start.x + (end.x - start.x) * progress,
+                    y: start.y + (end.y - start.y) * progress
+                ),
                 diameter: geometry.circleDiameter,
-                progress: progress,
-                isOnRightSide: geometry.isOnRightSide(index: bubble.slot)
+                progress: progress
             )
         }
+        // The dragged circle is drawn last, so it passes over the others.
+        guard let drag else { return laidOut }
+        return laidOut.filter { $0.id != drag.id } + laidOut.filter { $0.id == drag.id }
     }
 
     static func progress(for bubble: Bubble, now: Date) -> Double {
@@ -90,7 +116,7 @@ enum IslandLayout {
     /// How far the notch wall swells on each side while a circle is pulling away.
     /// This is the part that reads as the bezel stretching.
     static func bulge(layouts: [BubbleLayout], rightSide: Bool) -> CGFloat {
-        let candidates = layouts.filter { $0.isOnRightSide == rightSide && $0.slot / 2 == 0 }
+        let candidates = layouts.filter { $0.isOnRightSide == rightSide && $0.rank == 0 }
         let peak = candidates.map { layout -> Double in
             let t = min(max(layout.progress / 0.65, 0), 1)
             return sin(t * .pi)

@@ -47,14 +47,21 @@ final class PanelController {
     /// Called with the panel-space mouse position, or nil when the pointer is elsewhere.
     var onHover: ((CGPoint?) -> Void)?
 
+    /// Takes presses on circles: a click opens, a drag moves the circle.
+    weak var pointerTarget: IslandPointerTarget? {
+        didSet { hostingView.pointerTarget = pointerTarget }
+    }
+    private let hostingView: IslandHostingView
+
     init<Content: View>(@ViewBuilder content: (NotchGeometry) -> Content) {
         let geometry = NotchGeometry.current()
         self.geometry = geometry
         panel = NotchPanel(contentRect: geometry.panelFrame)
 
-        let hosting = NSHostingView(rootView: AnyView(content(geometry)))
+        let hosting = IslandHostingView(rootView: AnyView(content(geometry)))
         hosting.frame = CGRect(origin: .zero, size: geometry.panelFrame.size)
         hosting.autoresizingMask = [.width, .height]
+        hostingView = hosting
         panel.contentView = hosting
         applyFrame()
         panel.orderFrontRegardless()
@@ -121,5 +128,64 @@ final class PanelController {
             height: frame.height + 16
         )
         onHover?(hoverZone.contains(screenPoint) ? panelPoint : nil)
+    }
+}
+
+/// What the panel hands presses on circles to.
+@MainActor
+protocol IslandPointerTarget: AnyObject {
+    func circle(at point: CGPoint) -> String?
+    func pressBegan(on id: String, at point: CGPoint)
+    func pressMoved(to point: CGPoint)
+    func pressEnded(at point: CGPoint)
+}
+
+/// Hosts the island and handles presses on circles itself, in AppKit.
+///
+/// SwiftUI gestures in a panel that never becomes key are unreliable for drags, and
+/// a drag has to keep going when the pointer leaves the circle it started on. So a
+/// press that lands on a circle is claimed here, from mouse down to mouse up, and
+/// everything else (the hover card) goes on to SwiftUI.
+final class IslandHostingView: NSHostingView<AnyView> {
+    weak var pointerTarget: IslandPointerTarget?
+    private var isTracking = false
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Claim the click before SwiftUI's own views can.
+        let local = convert(point, from: superview)
+        if pointerTarget?.circle(at: panelPoint(fromView: local)) != nil { return self }
+        return super.hitTest(point)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = panelPoint(event)
+        guard let target = pointerTarget, let id = target.circle(at: point) else {
+            super.mouseDown(with: event)
+            return
+        }
+        isTracking = true
+        target.pressBegan(on: id, at: point)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isTracking else { return super.mouseDragged(with: event) }
+        pointerTarget?.pressMoved(to: panelPoint(event))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard isTracking else { return super.mouseUp(with: event) }
+        isTracking = false
+        pointerTarget?.pressEnded(at: panelPoint(event))
+    }
+
+    /// Panel coordinates: origin at the top left, y growing downward.
+    private func panelPoint(_ event: NSEvent) -> CGPoint {
+        panelPoint(fromView: convert(event.locationInWindow, from: nil))
+    }
+
+    private func panelPoint(fromView point: NSPoint) -> CGPoint {
+        isFlipped ? point : CGPoint(x: point.x, y: bounds.height - point.y)
     }
 }

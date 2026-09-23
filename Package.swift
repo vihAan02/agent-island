@@ -20,8 +20,7 @@ let package = Package(
         ),
         .testTarget(
             name: "IslandCoreTests",
-            dependencies: ["IslandCore"],
-            resources: [.copy("Fixtures")]
+            dependencies: ["IslandCore"]
         ),
     ]
 )

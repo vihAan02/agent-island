@@ -159,6 +159,24 @@ struct ReducerTests {
         #expect(reducer.session(id: id)?.isRetiring == true)
     }
 
+    @Test("A session vanishing from the registry retires, but one it never listed stays")
+    func registryOnlyRetiresWhatItListed() {
+        var reducer = SessionReducer()
+        let listed = SessionReducer.claudeID("s1")
+        let hookOnly = SessionReducer.claudeID("headless")
+
+        reducer.apply(hook(.userPromptSubmit))
+        reducer.apply(hook(.userPromptSubmit, session: "headless"))
+        reducer.apply(.claudeRegistry([
+            ClaudeRegistryEntry(pid: 7, sessionID: "s1", cwd: "/tmp/repo", status: "busy"),
+        ]))
+        #expect(reducer.session(id: hookOnly)?.isRetiring == false, "never in the registry, so not gone from it")
+
+        reducer.apply(.claudeRegistry([]))
+        #expect(reducer.session(id: listed)?.isRetiring == true)
+        #expect(reducer.session(id: hookOnly)?.isRetiring == false)
+    }
+
     @Test("Codex events map onto the same statuses")
     func codexFlow() {
         var reducer = SessionReducer()

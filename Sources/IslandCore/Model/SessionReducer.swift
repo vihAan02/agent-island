@@ -18,6 +18,9 @@ public struct SessionReducer: Sendable {
     /// Sessions that have delivered at least one hook. For those, file watching stops
     /// guessing at status and only fills in titles and effort.
     private var hooked: Set<String> = []
+    /// Sessions the Claude registry listed last time, so the ones that vanish from it
+    /// can be told apart from sessions it never knew about.
+    private var registered: Set<String> = []
 
     public init() {}
 
@@ -181,10 +184,13 @@ public struct SessionReducer: Sendable {
             store(session)
         }
 
-        // Anything the registry dropped is gone: the process exited.
-        for id in order where id.hasPrefix("claude:") && !seen.contains(id) {
+        // Anything the registry listed and has now dropped is gone: the process exited.
+        // Sessions it never listed, such as headless runs known only from hooks, end
+        // with their own SessionEnd or go stale.
+        for id in order where registered.contains(id) && !seen.contains(id) {
             retire(id, now: now)
         }
+        registered = seen
     }
 
     // MARK: Claude transcript
@@ -300,11 +306,28 @@ public struct SessionReducer: Sendable {
         sessions.removeValue(forKey: id)
         order.removeAll { $0 == id }
         hooked.remove(id)
+        registered.remove(id)
     }
 
     /// Forgets a session the user dismissed by hand.
     public mutating func dismiss(id: String, now: Date = Date()) {
         retire(id, now: now)
+    }
+
+    /// Sends every session of one kind back into the notch, as when watching it is
+    /// switched off.
+    public mutating func retireAll(kind: AgentKind, now: Date = Date()) {
+        for id in order where sessions[id]?.kind == kind {
+            retire(id, now: now)
+        }
+    }
+
+    /// Drops the sessions of one kind that are already on their way out, so a fresh
+    /// scan can bring them straight back rather than landing on a retiring session.
+    public mutating func dropRetiring(kind: AgentKind) {
+        for id in order where sessions[id]?.kind == kind && sessions[id]?.isRetiring == true {
+            drop(id: id)
+        }
     }
 
     // MARK: - Helpers

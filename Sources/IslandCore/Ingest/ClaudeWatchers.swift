@@ -25,7 +25,7 @@ public actor ClaudeRegistryWatcher {
             guard let self else { return }
             Task { await self.scan() }
         }
-        Task { await scan() }
+        Task { scan() }
     }
 
     public func stop() {
