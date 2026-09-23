@@ -8,8 +8,8 @@ import SwiftUI
 /// panel coordinates: origin at the window's top-left, y growing downward, which is
 /// what SwiftUI wants.
 struct NotchGeometry: Equatable {
-    /// Tall enough for the menu bar strip plus the hover card.
-    static let panelHeight: CGFloat = 170
+    /// Tall enough for the menu bar strip plus the card, dropped down.
+    static let panelHeight: CGFloat = 500
     /// Everyday height: just the strip the circles live in. Compositing a small
     /// window every frame costs far less than a tall, mostly empty one.
     var compactHeight: CGFloat { notchRect.height + 22 }

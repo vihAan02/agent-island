@@ -108,8 +108,10 @@ enum IslandLayout {
     }
 
     /// The hover card hangs under the menu bar, centred on its circle but kept on screen.
-    static func cardRect(around centerX: CGFloat, geometry: NotchGeometry) -> CGRect {
-        let size = ExpandedCard.size
+    /// `details` runs from 0, folded, to 1, dropped down; it can pass 1 a little on
+    /// its spring, and the card stretches with it.
+    static func cardRect(around centerX: CGFloat, geometry: NotchGeometry, details: Double = 0) -> CGRect {
+        let size = ExpandedCard.size(details: details)
         let minX: CGFloat = 12
         let maxX = max(minX, geometry.panelFrame.width - size.width - 12)
         return CGRect(
@@ -127,9 +129,10 @@ enum IslandLayout {
     static func cardFrame(
         for layout: BubbleLayout,
         openness: Double,
+        details: Double = 0,
         geometry: NotchGeometry
     ) -> (rect: CGRect, cornerRadius: CGFloat) {
-        let target = cardRect(around: layout.center.x, geometry: geometry)
+        let target = cardRect(around: layout.center.x, geometry: geometry, details: details)
         let start = layout.rect
         let t = CGFloat(max(0, openness))
         let rect = CGRect(

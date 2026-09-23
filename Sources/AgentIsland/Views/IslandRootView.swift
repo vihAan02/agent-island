@@ -6,7 +6,10 @@ struct IslandCardState {
     var id: String
     /// 0 is the circle, 1 the full card; on a spring, so it can pass 1 a little.
     var openness: Double
+    /// 0 folded, 1 dropped down, also on a spring.
+    var details: Double = 0
     var diff: DiffState
+    var conversation: CardConversation = .empty
 }
 
 /// The island itself, with no dependency on the model or on wall-clock time, so it
@@ -19,11 +22,13 @@ struct IslandContent: View {
     var now: Date = Date()
     let petID: String
     var card: IslandCardState?
+    /// What the card's controls do; offscreen, nothing.
+    var actions: CardActions = .inert
 
     var body: some View {
         let cardLayout = card.flatMap { card in layouts.first { $0.id == card.id } }
         let frame = cardLayout.map { layout in
-            IslandLayout.cardFrame(for: layout, openness: card?.openness ?? 0, geometry: geometry)
+            IslandLayout.cardFrame(for: layout, openness: card?.openness ?? 0, details: card?.details ?? 0, geometry: geometry)
         }
 
         let _ = Diagnostics.count("island-body")
@@ -46,12 +51,20 @@ struct IslandContent: View {
                 now: now
             )
 
-            // Presses on circles and the card are handled by the panel's hosting
-            // view in AppKit, so nothing here takes taps.
+            // Presses on circles are handled by the panel's hosting view in AppKit.
+            // The open card is ordinary SwiftUI: its buttons and field take clicks.
             if let card, let cardLayout, let frame {
-                let target = IslandLayout.cardRect(around: cardLayout.center.x, geometry: geometry)
-                ExpandedCard(session: cardLayout.session, diff: card.diff, now: now)
-                    .frame(width: target.width, height: target.height)
+                let target = IslandLayout.cardRect(around: cardLayout.center.x, geometry: geometry, details: card.details)
+                ExpandedCard(
+                    session: cardLayout.session,
+                    diff: card.diff,
+                    now: now,
+                    details: card.details,
+                    conversation: card.conversation,
+                    actions: actions
+                )
+                    .frame(width: target.width, height: target.height, alignment: .topLeading)
+                    .clipped()
                     // Words never show outside the liquid, even mid-pour.
                     .mask(alignment: .topLeading) {
                         RoundedRectangle(cornerRadius: frame.cornerRadius, style: .continuous)
@@ -61,7 +74,7 @@ struct IslandContent: View {
                     .position(x: target.midX, y: target.midY)
                     // And they arrive once the liquid has nearly finished pouring.
                     .opacity(Spring.smoothstep(card.openness, from: 0.75, to: 0.98))
-                    .allowsHitTesting(false)
+                    .allowsHitTesting(card.openness > 0.9)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -92,9 +105,12 @@ struct IslandRootView: View {
                     IslandCardState(
                         id: id,
                         openness: model.cardOpenness.value(at: now),
-                        diff: model.diffState(forSession: id)
+                        details: model.detailsOpenness.value(at: now),
+                        diff: model.diffState(forSession: id),
+                        conversation: model.conversation(for: id)
                     )
-                }
+                },
+                actions: model.cardID.map { model.cardActions(for: $0) } ?? .inert
             )
         }
         .ignoresSafeArea()

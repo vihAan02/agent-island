@@ -10,6 +10,9 @@ public struct ClaudeRegistryEntry: Sendable, Equatable, Identifiable {
     public var status: String
     /// `claude-desktop`, `cli`, and so on.
     public var entrypoint: String?
+    /// The Claude app's own id for the chat, `local_<uuid>`. Its links take this, not
+    /// the Claude Code session id.
+    public var hostSessionID: String?
     public var kind: String?
     public var statusUpdatedAt: Date?
     public var effort: EffortTier?
@@ -25,6 +28,7 @@ public struct ClaudeRegistryEntry: Sendable, Equatable, Identifiable {
         name: String? = nil,
         status: String = "",
         entrypoint: String? = nil,
+        hostSessionID: String? = nil,
         kind: String? = nil,
         statusUpdatedAt: Date? = nil,
         effort: EffortTier? = nil,
@@ -37,6 +41,7 @@ public struct ClaudeRegistryEntry: Sendable, Equatable, Identifiable {
         self.name = name
         self.status = status
         self.entrypoint = entrypoint
+        self.hostSessionID = hostSessionID
         self.kind = kind
         self.statusUpdatedAt = statusUpdatedAt
         self.effort = effort
@@ -68,6 +73,7 @@ public struct ClaudeRegistryEntry: Sendable, Equatable, Identifiable {
             name: object["name"] as? String,
             status: (object["status"] as? String) ?? "",
             entrypoint: object["entrypoint"] as? String,
+            hostSessionID: object["hostSessionId"] as? String,
             kind: object["kind"] as? String,
             statusUpdatedAt: statusMillis.map { Date(timeIntervalSince1970: $0 / 1000) }
         )
@@ -90,6 +96,8 @@ public struct CodexEvent: Sendable, Equatable {
         case userInputRequest(String?)
         case streamError(String?)
         case activity
+        /// Something the user or the agent said, for the timeline.
+        case message(ActivityItem)
     }
 
     public var threadID: String

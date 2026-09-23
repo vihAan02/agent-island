@@ -26,7 +26,11 @@ enum ProbeMode {
                 let session = bubble.session
                 let motion = session.isRetiring ? " (leaving)" : bubble.isRetracting ? " (tucked)" : ""
                 let command = session.command.map { " /\($0.name)" + (session.isRunningCommand ? " spinner" : "") } ?? ""
-                let state = motion + command
+                let waiting = model.asks[bubble.id].map { pending -> String in
+                    if case .plan = pending.ask { " [plan waiting]" } else { " [question waiting]" }
+                } ?? ""
+                let replies = model.wakeChannels[bubble.id]?.isOpen == true ? " [takes a message]" : ""
+                let state = motion + command + waiting + replies
                 let place = bubble.side.map { "\($0.rawValue) \(bubble.rank)" } ?? "waiting"
                 return "  \(place)  \(session.kind.rawValue)  \(session.status.rawValue)\(state)"
                     + "  effort=\(session.effortLabel)"

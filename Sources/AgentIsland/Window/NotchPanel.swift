@@ -23,10 +23,13 @@ final class NotchPanel: NSPanel {
         isReleasedWhenClosed = false
         // Clicks land on the circles only; PanelController flips this per pointer move.
         ignoresMouseEvents = true
+        // Buttons work without taking focus. Only the card's message field makes the
+        // panel key, so typing there never activates the app or pulls a window forward.
+        becomesKeyOnlyIfNeeded = true
         setAccessibilityLabel("Agent Island")
     }
 
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }
 
@@ -103,6 +106,8 @@ final class PanelController {
     func setExpanded(_ expanded: Bool) {
         guard isExpanded != expanded else { return }
         isExpanded = expanded
+        // The card's field is gone; typing goes back to wherever it was.
+        if !expanded { panel.makeFirstResponder(nil) }
         applyFrame()
     }
 
@@ -146,60 +151,45 @@ final class PanelController {
 @MainActor
 protocol IslandPointerTarget: AnyObject {
     func circle(at point: CGPoint) -> String?
-    func card(at point: CGPoint) -> String?
     func pressBegan(on id: String, at point: CGPoint)
     func pressMoved(to point: CGPoint)
     func pressEnded(at point: CGPoint)
-    func cardPressed(_ id: String)
 }
 
 /// Hosts the island and handles presses on circles itself, in AppKit.
 ///
-/// SwiftUI gestures in a panel that never becomes key are unreliable for drags, and
-/// a drag has to keep going when the pointer leaves the circle it started on. So a
-/// press on a circle or on the open card is claimed here, from mouse down to mouse up.
+/// SwiftUI gestures in a panel that is rarely key are unreliable for drags, and a
+/// drag has to keep going when the pointer leaves the circle it started on. So a
+/// press on a circle is claimed here, from mouse down to mouse up. The open card is
+/// left to SwiftUI: it is buttons, a form, and a text field.
 final class IslandHostingView: NSHostingView<AnyView> {
     weak var pointerTarget: IslandPointerTarget?
     private var isTracking = false
-    /// The card a press went down on; it counts if it also comes up there.
-    private var pressedCard: String?
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        // Claim the click before SwiftUI's own views can.
+        // Claim a press on a circle before SwiftUI's own views can.
         let panel = panelPoint(fromView: convert(point, from: superview))
-        if pointerTarget?.circle(at: panel) != nil || pointerTarget?.card(at: panel) != nil { return self }
+        if pointerTarget?.circle(at: panel) != nil { return self }
         return super.hitTest(point)
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = panelPoint(event)
-        guard let target = pointerTarget else { return super.mouseDown(with: event) }
-        if let id = target.circle(at: point) {
-            isTracking = true
-            target.pressBegan(on: id, at: point)
-        } else if let id = target.card(at: point) {
-            pressedCard = id
-        } else {
-            super.mouseDown(with: event)
+        guard let target = pointerTarget, let id = target.circle(at: point) else {
+            return super.mouseDown(with: event)
         }
+        isTracking = true
+        target.pressBegan(on: id, at: point)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard isTracking else {
-            if pressedCard == nil { super.mouseDragged(with: event) }
-            return
-        }
+        guard isTracking else { return super.mouseDragged(with: event) }
         pointerTarget?.pressMoved(to: panelPoint(event))
     }
 
     override func mouseUp(with event: NSEvent) {
-        if let card = pressedCard {
-            pressedCard = nil
-            if pointerTarget?.card(at: panelPoint(event)) == card { pointerTarget?.cardPressed(card) }
-            return
-        }
         guard isTracking else { return super.mouseUp(with: event) }
         isTracking = false
         pointerTarget?.pressEnded(at: panelPoint(event))

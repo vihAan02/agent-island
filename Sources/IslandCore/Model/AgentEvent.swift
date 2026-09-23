@@ -31,6 +31,8 @@ public enum TranscriptSignal: Sendable, Equatable {
     /// A slash command such as `/compact` is over: it finished, failed, or was
     /// cancelled. Claude writes these lines once the command ends, so `at` is when.
     case commandFinished(name: String, at: Date?)
+    /// A line for the session's timeline. Kept by the app, not the reducer.
+    case activity(ActivityItem)
 }
 
 /// One decoded hook payload, from Claude Code or from Codex. Both use the same schema.
@@ -73,6 +75,12 @@ public struct HookEvent: Sendable, Equatable {
     public var commandName: String?
     /// What started a compaction: `manual` for `/compact`, `auto` for a full context.
     public var trigger: String?
+    /// The question or plan an AskUserQuestion or ExitPlanMode call waits on.
+    public var ask: PendingAsk?
+    /// That call's input as sent, to hand back with the answer filled in.
+    public var toolInput: Data?
+    /// The hook is holding its connection open for an answer from the island.
+    public var wantsReply: Bool
     /// Present only when the hook fires inside a subagent.
     public var agentID: String?
     public var env: [String: String]
@@ -94,6 +102,9 @@ public struct HookEvent: Sendable, Equatable {
         isInterrupt: Bool = false,
         commandName: String? = nil,
         trigger: String? = nil,
+        ask: PendingAsk? = nil,
+        toolInput: Data? = nil,
+        wantsReply: Bool = false,
         agentID: String? = nil,
         env: [String: String] = [:],
         receivedAt: Date = Date()
@@ -113,6 +124,9 @@ public struct HookEvent: Sendable, Equatable {
         self.isInterrupt = isInterrupt
         self.commandName = commandName
         self.trigger = trigger
+        self.ask = ask
+        self.toolInput = toolInput
+        self.wantsReply = wantsReply
         self.agentID = agentID
         self.env = env
         self.receivedAt = receivedAt
@@ -144,6 +158,11 @@ public struct HookEvent: Sendable, Equatable {
         // the prompt as typed, which starts with the command.
         let commandName = (payload["command_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             ?? SlashCommand.name(fromPrompt: payload["prompt"] as? String)
+        // Only the two tools that wait on the user keep their input around.
+        let ask = PendingAsk.parse(toolName: toolName, toolInput: payload["tool_input"])
+        let toolInput = ask == nil ? nil : (payload["tool_input"]).flatMap {
+            try? JSONSerialization.data(withJSONObject: $0)
+        }
 
         return HookEvent(
             kind: kind,
@@ -161,6 +180,9 @@ public struct HookEvent: Sendable, Equatable {
             isInterrupt: (payload["is_interrupt"] as? Bool) ?? false,
             commandName: commandName,
             trigger: payload["trigger"] as? String,
+            ask: ask,
+            toolInput: toolInput,
+            wantsReply: (root["reply"] as? Bool) ?? false,
             agentID: payload["agent_id"] as? String,
             env: env,
             receivedAt: now

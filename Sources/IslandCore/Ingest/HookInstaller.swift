@@ -2,40 +2,103 @@ import Foundation
 
 /// Adds and removes the Agent Island hook entries in the agents' own settings files.
 ///
-/// Every entry runs the same small binary with `async: true`, so no hook ever blocks
-/// a turn, and none of them print anything, so none can change a permission decision.
+/// Every entry runs the same small binary. Almost all of them are `async: true` and
+/// print nothing, so they never block a turn or change a decision. Two kinds wait
+/// instead, so the island can answer: see `HookMode`.
 public enum HookInstaller {
     public static let marker = "agent-island-hook"
 
+    /// How an entry runs.
+    public enum HookMode: Sendable, Equatable {
+        /// Tells the app and exits at once. Never waits, never prints.
+        case notify
+        /// Waits for an answer from the island. Claude shows its own dialog at the
+        /// same time, and whichever is answered first wins.
+        case answer
+        /// Runs in the background once a turn ends, so a message typed in the island
+        /// can wake the session.
+        case wake
+    }
+
+    public struct Entry: Sendable {
+        public var event: String
+        public var matcher: String?
+        public var mode: HookMode
+
+        public init(_ event: String, _ matcher: String? = nil, _ mode: HookMode = .notify) {
+            self.event = event
+            self.matcher = matcher
+            self.mode = mode
+        }
+
+        /// How the entry shows in the Hooks pane and the logs.
+        public var label: String {
+            matcher.map { "\(event) (\($0))" } ?? event
+        }
+    }
+
+    /// The Claude tools whose question the island can answer.
+    public static let answerableTools = "AskUserQuestion|ExitPlanMode"
+    /// A waiting hook lasts a day at most, then Claude Code ends it.
+    public static let replyTimeout = 86_400
+    /// Put before a message typed in the island, when it reaches Claude.
+    public static let wakePrefix = "The user sent this from Agent Island, the menu bar app watching this session. It is their next message to you:"
+
     /// Claude Code events worth a status change, with the tool matcher where one helps.
-    public static let claudeEvents: [(event: String, matcher: String?)] = [
-        ("SessionStart", nil),
-        ("UserPromptSubmit", nil),
-        ("UserPromptExpansion", nil),
-        ("PreToolUse", "AskUserQuestion|ExitPlanMode"),
-        ("PostToolUse", nil),
-        ("PostToolUseFailure", nil),
-        ("PermissionRequest", nil),
-        ("PermissionDenied", nil),
-        ("Notification", nil),
-        ("Stop", nil),
-        ("StopFailure", nil),
-        ("SessionEnd", nil),
-        ("PreCompact", nil),
-        ("PostCompact", nil),
+    public static let claudeEntries: [Entry] = [
+        Entry("SessionStart"),
+        Entry("UserPromptSubmit"),
+        Entry("UserPromptExpansion"),
+        Entry("PreToolUse", answerableTools),
+        Entry("PostToolUse"),
+        Entry("PostToolUseFailure"),
+        Entry("PermissionRequest"),
+        Entry("PermissionRequest", answerableTools, .answer),
+        Entry("PermissionDenied"),
+        Entry("Notification"),
+        Entry("Stop", nil, .wake),
+        Entry("StopFailure"),
+        Entry("SessionEnd"),
+        Entry("PreCompact"),
+        Entry("PostCompact"),
     ]
 
     /// Codex uses the same schema, minus the events it does not emit.
-    public static let codexEvents: [(event: String, matcher: String?)] = [
-        ("SessionStart", nil),
-        ("UserPromptSubmit", nil),
-        ("PreToolUse", nil),
-        ("PostToolUse", nil),
-        ("PermissionRequest", nil),
-        ("Stop", nil),
-        ("Interrupt", nil),
-        ("SessionEnd", nil),
+    public static let codexEntries: [Entry] = [
+        Entry("SessionStart"),
+        Entry("UserPromptSubmit"),
+        Entry("PreToolUse"),
+        Entry("PostToolUse"),
+        Entry("PermissionRequest"),
+        Entry("Stop"),
+        Entry("Interrupt"),
+        Entry("SessionEnd"),
     ]
+
+    public static func entries(for agent: AgentKind) -> [Entry] {
+        agent == .claude ? claudeEntries : codexEntries
+    }
+
+    /// The hook command for one entry, as it is written into the settings file.
+    static func command(for entry: Entry, binaryPath: String, agent: AgentKind) -> [String: Any] {
+        var hook: [String: Any] = ["type": "command", "command": binaryPath]
+        switch entry.mode {
+        case .notify:
+            hook["args"] = [agent.rawValue]
+            hook["async"] = true
+            hook["timeout"] = 5
+        case .answer:
+            hook["args"] = [agent.rawValue, "--reply"]
+            hook["timeout"] = replyTimeout
+        case .wake:
+            hook["args"] = [agent.rawValue, "--reply"]
+            hook["asyncRewake"] = true
+            hook["timeout"] = replyTimeout
+            hook["rewakeMessage"] = wakePrefix
+            hook["rewakeSummary"] = "Message from Agent Island"
+        }
+        return hook
+    }
 
     public enum InstallError: Error, CustomStringConvertible {
         case unreadable(String)
@@ -68,12 +131,25 @@ public enum HookInstaller {
         return commands
     }
 
-    /// Events this version listens for that have no Agent Island hook in the settings
-    /// file yet, as after an update that added some.
-    public static func missingEvents(settingsPath: String, agent: AgentKind) -> [String] {
-        let events = (agent == .claude ? claudeEvents : codexEvents).map(\.event)
+    /// Entries this version wants that the settings file does not have in this form
+    /// yet, as after an update that added some or changed how one runs.
+    public static func missingEntries(settingsPath: String, agent: AgentKind) -> [String] {
         let hooks = readHooks(settingsPath: settingsPath) ?? [:]
-        return events.filter { ourCommands(in: hooks[$0] as Any).isEmpty }
+        return entries(for: agent).filter { entry in
+            let groups = (hooks[entry.event] as? [[String: Any]]) ?? []
+            return !groups.contains { group in
+                (group["matcher"] as? String) == entry.matcher
+                    && ((group["hooks"] as? [[String: Any]]) ?? []).contains { mode(of: $0) == entry.mode }
+            }
+        }.map(\.label)
+    }
+
+    /// The mode an installed hook of ours runs in, or nil for someone else's hook.
+    private static func mode(of hook: [String: Any]) -> HookMode? {
+        guard (hook["command"] as? String)?.contains(marker) == true else { return nil }
+        if (hook["asyncRewake"] as? Bool) == true { return .wake }
+        if ((hook["args"] as? [String]) ?? []).contains("--reply") { return .answer }
+        return .notify
     }
 
     private static func readHooks(settingsPath: String) -> [String: Any]? {
@@ -104,25 +180,18 @@ public enum HookInstaller {
         binaryPath: String,
         agent: AgentKind
     ) throws {
-        let events = agent == .claude ? claudeEvents : codexEvents
         try rewrite(settingsPath: settingsPath) { root in
             var hooks = (root["hooks"] as? [String: Any]) ?? [:]
             hooks = stripOurEntries(from: hooks)
 
-            for (event, matcher) in events {
-                var groups = (hooks[event] as? [[String: Any]]) ?? []
+            for entry in entries(for: agent) {
+                var groups = (hooks[entry.event] as? [[String: Any]]) ?? []
                 var group: [String: Any] = [
-                    "hooks": [[
-                        "type": "command",
-                        "command": binaryPath,
-                        "args": [agent.rawValue],
-                        "async": true,
-                        "timeout": 5,
-                    ]],
+                    "hooks": [command(for: entry, binaryPath: binaryPath, agent: agent)],
                 ]
-                if let matcher { group["matcher"] = matcher }
+                if let matcher = entry.matcher { group["matcher"] = matcher }
                 groups.append(group)
-                hooks[event] = groups
+                hooks[entry.event] = groups
             }
             root["hooks"] = hooks
             return root

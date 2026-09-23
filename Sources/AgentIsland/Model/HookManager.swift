@@ -61,7 +61,7 @@ final class HookManager {
     /// that were never added, or that run another copy of the app, are left alone.
     func updateInstalledHooks() {
         for kind in AgentKind.allCases where state(for: kind) == .installed {
-            let missing = HookInstaller.missingEvents(settingsPath: Self.settingsPath(for: kind), agent: kind)
+            let missing = HookInstaller.missingEntries(settingsPath: Self.settingsPath(for: kind), agent: kind)
             guard !missing.isEmpty, install(kind) else { continue }
             NSLog("Agent Island: added \(kind.rawValue) hooks for \(missing.joined(separator: ", "))")
         }

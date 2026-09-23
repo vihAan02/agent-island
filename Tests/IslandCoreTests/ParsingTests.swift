@@ -242,14 +242,31 @@ struct RegistryTests {
             {"pid":56564,"sessionId":"4dbad511-57cc","cwd":"/Users/me/agent-island",
              "startedAt":1790095234937,"version":"2.1.275","kind":"interactive",
              "entrypoint":"claude-desktop","name":"Dynamic island","status":"busy",
+             "hostSessionId":"local_336dea01-45ca-457a-b323-9b37b11aa537",
              "statusUpdatedAt":1790095234937}
             """
         let entry = try #require(ClaudeRegistryEntry.decode(Data(json.utf8)))
+        #expect(entry.hostSessionID == "local_336dea01-45ca-457a-b323-9b37b11aa537")
         #expect(entry.pid == 56564)
         #expect(entry.sessionID == "4dbad511-57cc")
         #expect(entry.name == "Dynamic island")
         #expect(entry.status == "busy")
         #expect(entry.host == .claudeDesktop)
+    }
+
+    @Test("A chat in the Claude app opens by the app's own id, not the Claude Code one")
+    func claudeAppLink() throws {
+        var reducer = SessionReducer()
+        reducer.apply(.claudeRegistry([
+            ClaudeRegistryEntry(pid: 7, sessionID: "4dbad511-57cc", cwd: "/tmp", status: "busy",
+                                entrypoint: "claude-desktop", hostSessionID: "local_336dea01-45ca"),
+        ]))
+        let session = try #require(reducer.session(id: SessionReducer.claudeID("4dbad511-57cc")))
+        #expect(session.claudeAppLink?.absoluteString == "claude://code/continue?session=local_336dea01-45ca&source=agent_island")
+
+        var terminal = session
+        terminal.hostSessionID = nil
+        #expect(terminal.claudeAppLink == nil, "a CLI session has no chat in the app to open")
     }
 
     @Test("Key files and junk decode to nothing")

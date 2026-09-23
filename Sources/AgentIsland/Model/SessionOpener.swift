@@ -5,14 +5,17 @@ import IslandCore
 /// Opens the chat a circle stands for.
 ///
 /// Both desktop apps register a URL scheme: Claude takes
-/// `claude://code/continue?session=<uuid>` and Codex takes `codex://threads/<id>`.
+/// `claude://code/continue?session=local_<uuid>` and Codex takes `codex://threads/<id>`.
 /// A terminal session has no link, so the terminal app that owns it is brought forward.
 enum SessionOpener {
+    static func claudeLink(for session: AgentSession) -> URL? {
+        session.claudeAppLink
+    }
+
     static func open(_ session: AgentSession) {
         switch session.host {
         case .claudeDesktop:
-            let sessionID = String(session.id.dropFirst("claude:".count))
-            if let url = URL(string: "claude://code/continue?session=\(sessionID)&source=agent_island") {
+            if let url = claudeLink(for: session) {
                 NSWorkspace.shared.open(url)
                 return
             }

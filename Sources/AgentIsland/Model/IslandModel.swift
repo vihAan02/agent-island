@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import IslandCore
 import Observation
+import SwiftUI
 
 /// One circle on screen: a session plus the animation bookkeeping for it.
 struct Bubble: Identifiable, Equatable {
@@ -98,10 +99,13 @@ final class IslandModel: IslandPointerTarget {
                 if oldValue != nil { cardOpenness = SpringMotion(at: 0, now: now) }
                 cardID = expandedID
                 cardOpenness.retarget(to: 1, at: now, tuning: .cardOpen)
+                // A question or a plan waiting on the user opens straight onto it.
+                setDetailsOpen(asks[expandedID] != nil, animated: oldValue != nil, at: now)
                 onExpansionChanged?(true)
                 refreshDiff(for: expandedID, force: true)
             } else {
                 cardOpenness.retarget(to: 0, at: now, tuning: .cardClose)
+                setDetailsOpen(false, animated: true, at: now)
                 finishClosingCard()
             }
             updateAnimationMode()
@@ -114,6 +118,31 @@ final class IslandModel: IslandPointerTarget {
     /// 0 is the circle, 1 the full card. On a spring, so the circle pours down into
     /// the card and back up into itself.
     private(set) var cardOpenness = SpringMotion(at: 0, now: .distantPast)
+
+    /// The card's drop-down: the question or plan waiting, the timeline, and a
+    /// field for the next message.
+    private(set) var detailsOpen = false
+    /// 0 folded, 1 dropped down; the card's height follows it on a spring.
+    private(set) var detailsOpenness = SpringMotion(at: 0, now: .distantPast)
+
+    // MARK: Talking back
+
+    /// Questions and plans the island can answer, by session.
+    private(set) var asks: [String: PendingReply] = [:]
+    /// Sessions whose turn has ended with a hook waiting to take their next message.
+    private(set) var wakeChannels: [String: HookReplyChannel] = [:]
+    /// Messages typed while the agent was busy, sent as soon as its turn ends.
+    private(set) var queuedMessages: [String: String] = [:]
+    /// Cards whose message is being pasted into the Claude app right now.
+    private(set) var pasting: Set<String> = []
+    /// A reply that could not be delivered, shown on the card until the next change.
+    private(set) var replyNotices: [String: String] = [:]
+    /// Each session's timeline, oldest first.
+    private(set) var activity: [String: [ActivityItem]] = [:]
+    /// What the user is typing on each card.
+    var drafts: [String: String] = [:]
+    /// Options picked on a question form, by session, then question.
+    var picks: [String: [String: Set<String>]] = [:]
 
     /// Lines changed in each session folder, for the card.
     private(set) var diffs: [String: DiffState] = [:]
@@ -199,8 +228,12 @@ final class IslandModel: IslandPointerTarget {
     }
 
     private func startHookServer() {
-        let server = HookSocketServer { [weak self] event in
-            Task { @MainActor in self?.handle(.hook(event)) }
+        let server = HookSocketServer { [weak self] event, reply in
+            Task { @MainActor in
+                // With no model to hold it, the reply channel closes and the hook
+                // goes on without an answer.
+                self?.handleHook(event, reply: reply)
+            }
         }
         do {
             try server.start()
@@ -287,6 +320,7 @@ final class IslandModel: IslandPointerTarget {
         // stopped can still have an event in flight.
         guard demo != nil || settings.isWatching(event.kind) else { return }
         if case .hook = event { hookedSessionsSeen = true }
+        record(event)
         reducer.apply(event)
         syncTranscriptFollowing()
         rebuild()
@@ -300,6 +334,7 @@ final class IslandModel: IslandPointerTarget {
         for (id, circle) in motion where circle.isHidden(now: now, retractDuration: retractDuration) {
             guard reducer.session(id: id)?.isRetiring == true, press?.id != id else { continue }
             reducer.drop(id: id)
+            forgetConversation(id)
             motion.removeValue(forKey: id)
             slides.removeValue(forKey: id)
             hovers.removeValue(forKey: id)
@@ -498,7 +533,7 @@ final class IslandModel: IslandPointerTarget {
 
     func cardRect(for id: String) -> CGRect? {
         guard let bubble = bubbles.first(where: { $0.id == id }), bubble.side != nil else { return nil }
-        return IslandLayout.cardRect(around: bubble.restingCenter.x, geometry: geometry)
+        return IslandLayout.cardRect(around: bubble.restingCenter.x, geometry: geometry, details: detailsOpen ? 1 : 0)
     }
 
     private func publishLayout() {
@@ -733,8 +768,8 @@ final class IslandModel: IslandPointerTarget {
         let now = Date()
         var mode = AnimationMode.paused
         if press?.isDragging == true { return .emerging }
-        // The card pouring out of its circle, or back in.
-        if cardID != nil, !cardOpenness.isSettled(at: now) { return .emerging }
+        // The card pouring out of its circle, or back in, or dropping down.
+        if cardID != nil, !cardOpenness.isSettled(at: now) || !detailsOpenness.isSettled(at: now) { return .emerging }
 
         for bubble in bubbles {
             // Gliding to make room, or landing after a drag.
@@ -787,6 +822,310 @@ extension SpringMotion.Tuning {
     static let hover = SpringMotion.Tuning(response: 0.3, damping: 0.55)
     /// The card pouring out of its circle.
     static let cardOpen = SpringMotion.Tuning(response: 0.46, damping: 0.74)
+    /// The card dropping down to show more, with a little give at the bottom.
+    static let details = SpringMotion.Tuning(response: 0.42, damping: 0.78)
     /// And folding back in, briskly and without a wobble.
     static let cardClose = SpringMotion.Tuning(response: 0.26, damping: 0.95)
+}
+
+// MARK: - Talking back
+
+/// A question or a plan held open for an answer from the island.
+struct PendingReply {
+    var ask: PendingAsk
+    /// The call's input as Claude sent it, handed back with the answer.
+    var toolInput: Data
+    var channel: HookReplyChannel
+}
+
+/// How a message typed on a card would reach the agent right now.
+enum ReplyRoute: Equatable {
+    /// Pasted into the chat's own message box in the Claude app.
+    case paste
+    /// The turn is over and a hook is waiting to take it.
+    case now
+    /// The agent is busy; it goes as soon as the turn ends.
+    case whenDone
+    /// It cannot, for the reason given.
+    case unavailable(String)
+}
+
+extension IslandModel {
+    /// A hook payload, with the connection it is holding open if it wants an answer.
+    func handleHook(_ hook: HookEvent, reply: HookReplyChannel?) {
+        guard demo != nil || settings.isWatching(hook.kind) else {
+            reply?.cancel()
+            return
+        }
+        let id = hook.kind == .claude ? SessionReducer.claudeID(hook.sessionID) : SessionReducer.codexID(hook.sessionID)
+        settleReplies(for: id, after: hook)
+        handle(.hook(hook))
+        if let reply { hold(reply, for: hook, id: id) }
+    }
+
+    /// Lets go of answers that something else has already given: the question was
+    /// answered in the chat, or a new turn started there.
+    private func settleReplies(for id: String, after hook: HookEvent) {
+        let turnMoved: Bool = switch hook.name {
+        case .userPromptSubmit, .userPromptExpansion, .stop, .stopFailure, .interrupt, .sessionEnd: true
+        default: false
+        }
+
+        if let pending = asks[id] {
+            let tool = if case .plan = pending.ask { "ExitPlanMode" } else { "AskUserQuestion" }
+            let answeredThere = switch hook.name {
+            case .postToolUse, .postToolUseFailure, .permissionDenied: hook.toolName == tool
+            default: false
+            }
+            if turnMoved || answeredThere || (hook.name == .permissionRequest && hook.wantsReply) {
+                pending.channel.cancel()
+                asks[id] = nil
+            }
+        }
+
+        if let channel = wakeChannels[id], hook.agentID == nil {
+            let working = switch hook.name {
+            case .userPromptSubmit, .userPromptExpansion, .preToolUse, .postToolUse, .sessionEnd, .stop: true
+            default: false
+            }
+            if working {
+                channel.cancel()
+                wakeChannels[id] = nil
+            }
+        }
+        if hook.name == .userPromptSubmit || hook.name == .stop { replyNotices[id] = nil }
+    }
+
+    /// Keeps a waiting hook when it is one the island can answer, and lets the rest go.
+    private func hold(_ reply: HookReplyChannel, for hook: HookEvent, id: String) {
+        guard hook.agentID == nil, let session = reducer.session(id: id), !session.isRetiring else {
+            reply.cancel()
+            return
+        }
+        switch hook.name {
+        case .permissionRequest:
+            guard let ask = hook.ask, let input = hook.toolInput else { return reply.cancel() }
+            asks[id] = PendingReply(ask: ask, toolInput: input, channel: reply)
+            picks[id] = nil
+            if expandedID == id { setDetailsOpen(true, animated: true, at: Date()) }
+
+        case .stop:
+            // Only a session the Claude registry lists is one someone is sitting at.
+            // A headless `claude -p` run would otherwise wait on its last hook.
+            guard session.pid != nil else { return reply.cancel() }
+            if let queued = queuedMessages.removeValue(forKey: id) {
+                deliver(queued, over: reply, to: id)
+            } else {
+                wakeChannels[id] = reply
+            }
+
+        default:
+            reply.cancel()
+        }
+        publishLayout()
+    }
+
+    // MARK: Answering
+
+    /// Answers the questions Claude asked, keyed by question text.
+    func answer(_ id: String, with answers: [String: String]) {
+        guard let pending = asks.removeValue(forKey: id),
+              let reply = HookReply.answer(toolInput: pending.toolInput, answers: answers)
+        else { return }
+        let summary = answers.values.joined(separator: "; ")
+        finish(id, sending: reply, over: pending.channel, logging: "Answered: \(summary)")
+        picks[id] = nil
+    }
+
+    func approvePlan(_ id: String, acceptEdits: Bool) {
+        guard let pending = asks.removeValue(forKey: id),
+              let reply = HookReply.approvePlan(toolInput: pending.toolInput, acceptEdits: acceptEdits)
+        else { return }
+        finish(id, sending: reply, over: pending.channel,
+               logging: acceptEdits ? "Approved the plan, accepting edits" : "Approved the plan")
+    }
+
+    func revisePlan(_ id: String, feedback: String) {
+        guard let pending = asks.removeValue(forKey: id) else { return }
+        let trimmed = feedback.trimmingCharacters(in: .whitespacesAndNewlines)
+        finish(id, sending: .revisePlan(feedback: trimmed), over: pending.channel,
+               logging: trimmed.isEmpty ? "Asked to keep planning" : "Asked for changes: \(trimmed)")
+        drafts[id] = nil
+    }
+
+    /// Sends the typed message now, or queues it until the turn ends.
+    func send(_ id: String, message: String) {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        switch replyRoute(for: id) {
+        case .paste:
+            guard let session = reducer.session(id: id) else { return }
+            pasting.insert(id)
+            replyNotices[id] = nil
+            let sends = settings.pasteSends
+            Task { @MainActor [weak self] in
+                let outcome = await ChatPaster.deliver(text, to: session, send: sends)
+                self?.finishPaste(id, text: text, outcome: outcome)
+            }
+            return
+        case .now:
+            guard let channel = wakeChannels.removeValue(forKey: id) else { return }
+            deliver(text, over: channel, to: id)
+        case .whenDone:
+            queuedMessages[id] = text
+            appendActivity(ActivityItem(kind: .sent, text: "Queued: \(text)", at: Date()), to: id)
+        case .unavailable:
+            return
+        }
+        drafts[id] = nil
+    }
+
+    /// Takes back a message that was waiting for the turn to end.
+    func unqueue(_ id: String) {
+        guard let text = queuedMessages.removeValue(forKey: id) else { return }
+        drafts[id] = text
+    }
+
+    func replyRoute(for id: String) -> ReplyRoute {
+        guard let session = reducer.session(id: id), !session.isRetiring else {
+            return .unavailable("This session has ended")
+        }
+        guard session.kind == .claude else { return .unavailable("Reply to Codex in the Codex app") }
+        // A chat in the Claude app takes the message in its own box, busy or not:
+        // Claude queues it there as if it had been typed.
+        if session.host == .claudeDesktop, SessionOpener.claudeLink(for: session) != nil { return .paste }
+        if wakeChannels[id]?.isOpen == true { return .now }
+        switch session.status {
+        case .working, .plan, .question, .error:
+            return .whenDone
+        case .complete, .idle, .waiting:
+            return .unavailable("Replies start after Claude's next turn ends")
+        }
+    }
+
+    private func finishPaste(_ id: String, text: String, outcome: ChatPaster.Outcome) {
+        pasting.remove(id)
+        switch outcome {
+        case .sent:
+            appendActivity(ActivityItem(kind: .sent, text: text, at: Date()), to: id)
+            drafts[id] = nil
+            collapse()
+        case .pasted(let note):
+            appendActivity(ActivityItem(kind: .sent, text: "Pasted: \(text)", at: Date()), to: id)
+            drafts[id] = nil
+            replyNotices[id] = note
+        case .copied(let note):
+            replyNotices[id] = note
+        }
+    }
+
+    private func deliver(_ text: String, over channel: HookReplyChannel, to id: String) {
+        finish(id, sending: .prompt(text), over: channel, logging: text)
+    }
+
+    private func finish(_ id: String, sending reply: HookReply, over channel: HookReplyChannel, logging text: String) {
+        if channel.send(reply) {
+            appendActivity(ActivityItem(kind: .sent, text: text, at: Date()), to: id)
+            replyNotices[id] = nil
+            reducer.noteReplySent(id: id)
+            rebuild()
+        } else {
+            replyNotices[id] = "That didn't reach Claude. It may have been answered in the chat."
+        }
+        publishLayout()
+    }
+
+    // MARK: Timeline
+
+    /// Keeps the timeline lines out of every event on its way to the reducer.
+    func record(_ event: AgentEvent) {
+        switch event {
+        case .claudeTranscript(let sessionID, .activity(let item)):
+            appendActivity(item, to: SessionReducer.claudeID(sessionID))
+        case .codex(let codex):
+            let id = SessionReducer.codexID(codex.threadID)
+            switch codex.kind {
+            case .message(let item): appendActivity(item, to: id)
+            case .toolCall(let detail): appendActivity(ActivityItem(kind: .tool, text: detail, at: codex.at), to: id)
+            default: break
+            }
+        default:
+            break
+        }
+    }
+
+    private static let activityLimit = 80
+
+    private func appendActivity(_ item: ActivityItem, to id: String) {
+        var items = activity[id] ?? []
+        items.append(item)
+        if items.count > Self.activityLimit { items.removeFirst(items.count - Self.activityLimit) }
+        activity[id] = items
+    }
+
+    /// Drops everything kept for a session that has gone.
+    func forgetConversation(_ id: String) {
+        asks.removeValue(forKey: id)?.channel.cancel()
+        wakeChannels.removeValue(forKey: id)?.cancel()
+        queuedMessages[id] = nil
+        replyNotices[id] = nil
+        activity[id] = nil
+        drafts[id] = nil
+        picks[id] = nil
+    }
+
+    // MARK: Card
+
+    /// What the drop-down shows for a session.
+    func conversation(for id: String) -> CardConversation {
+        CardConversation(
+            ask: asks[id]?.ask,
+            activity: activity[id] ?? [],
+            route: replyRoute(for: id),
+            queued: queuedMessages[id],
+            notice: replyNotices[id],
+            isPasting: pasting.contains(id),
+            pasteSends: settings.pasteSends
+        )
+    }
+
+    /// The card's controls, bound to one session.
+    func cardActions(for id: String) -> CardActions {
+        CardActions(
+            openChat: { [weak self] in self?.cardPressed(id) },
+            toggleDetails: { [weak self] in self?.toggleDetails() },
+            collapse: { [weak self] in self?.collapse() },
+            answer: { [weak self] answers in self?.answer(id, with: answers) },
+            approvePlan: { [weak self] acceptEdits in self?.approvePlan(id, acceptEdits: acceptEdits) },
+            revisePlan: { [weak self] feedback in self?.revisePlan(id, feedback: feedback) },
+            send: { [weak self] text in self?.send(id, message: text) },
+            unqueue: { [weak self] in self?.unqueue(id) },
+            draft: Binding(
+                get: { [weak self] in self?.drafts[id] ?? "" },
+                set: { [weak self] in self?.drafts[id] = $0 }
+            ),
+            picks: Binding(
+                get: { [weak self] in self?.picks[id] ?? [:] },
+                set: { [weak self] in self?.picks[id] = $0 }
+            )
+        )
+    }
+
+    // MARK: Drop-down
+
+    func toggleDetails() {
+        setDetailsOpen(!detailsOpen, animated: true, at: Date())
+    }
+
+    func setDetailsOpen(_ open: Bool, animated: Bool, at now: Date) {
+        guard open != detailsOpen else { return }
+        detailsOpen = open
+        if animated {
+            detailsOpenness.retarget(to: open ? 1 : 0, at: now, tuning: .details)
+        } else {
+            detailsOpenness = SpringMotion(at: open ? 1 : 0, now: now)
+        }
+        updateAnimationMode()
+        publishLayout()
+    }
 }

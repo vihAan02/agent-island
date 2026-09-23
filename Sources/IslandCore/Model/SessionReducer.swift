@@ -146,7 +146,17 @@ public struct SessionReducer: Sendable {
             session.flashRevertAt = now.addingTimeInterval(errorFlashDuration)
 
         case .permissionRequest:
-            setStatus(&session, .question, detail: hook.toolSummary.map { "Needs approval: \($0)" }, now: now)
+            switch hook.toolName {
+            // These two are not asking for permission: the question itself, and the
+            // plan, are what is waiting.
+            case "AskUserQuestion":
+                setStatus(&session, .question, detail: hook.toolSummary, now: now)
+            case "ExitPlanMode":
+                session.command = nil
+                setStatus(&session, .plan, detail: "Plan ready for review", now: now)
+            default:
+                setStatus(&session, .question, detail: hook.toolSummary.map { "Needs approval: \($0)" }, now: now)
+            }
 
         case .permissionDenied:
             setStatus(&session, session.planMode ? .plan : .working, detail: nil, now: now)
@@ -201,6 +211,7 @@ public struct SessionReducer: Sendable {
             var session = sessions[id] ?? makeSession(id: id, kind: .claude, now: now)
             session.pid = entry.pid
             session.host = entry.host
+            if let host = entry.hostSessionID { session.hostSessionID = host }
             session.setCwd(entry.cwd)
             if let name = entry.name, !name.isEmpty { session.title = name }
             if let effort = entry.effort { session.effort = effort }
@@ -240,6 +251,8 @@ public struct SessionReducer: Sendable {
     private mutating func applyTranscript(sessionID: String, signal: TranscriptSignal, now: Date) {
         let id = Self.claudeID(sessionID)
         guard var session = sessions[id] else { return }
+        // The timeline is the app's to keep; it changes nothing about the session.
+        if case .activity = signal { return }
 
         switch signal {
         case .effort(let tier):
@@ -266,6 +279,8 @@ public struct SessionReducer: Sendable {
             // after this command started can be this command's.
             guard let command = session.command, (at ?? now) > command.startedAt else { break }
             finishCommand(&session, named: name, now: now)
+        case .activity:
+            break
         }
         store(session)
     }
@@ -317,6 +332,9 @@ public struct SessionReducer: Sendable {
                 setStatus(&session, .working, detail: nil, now: event.at)
             }
 
+        case .message:
+            break
+
         case .toolCall(let detail):
             if session.status == .complete || session.status == .idle {
                 setStatus(&session, session.planMode ? .plan : .working, detail: nil, now: event.at)
@@ -361,6 +379,14 @@ public struct SessionReducer: Sendable {
             }
         }
         return retired
+    }
+
+    /// The user answered, or sent a message, from the island. Claude is back at work,
+    /// though a message that wakes it arrives with no UserPromptSubmit to say so.
+    public mutating func noteReplySent(id: String, now: Date = Date()) {
+        guard var session = sessions[id], !session.isRetiring else { return }
+        setStatus(&session, session.planMode ? .plan : .working, detail: nil, now: now)
+        store(session)
     }
 
     /// Removes a retiring session once its animation has played.

@@ -11,17 +11,52 @@ enum DiffState: Equatable {
 
 /// The card a circle pours into when clicked: what the agent is doing right now,
 /// how much it has changed, and the mode it is in. Clicking the card opens the chat.
+///
+/// Its drop-down shows more: the question or plan the agent is waiting on, a
+/// timeline of what it did, and a field for the next message.
 struct ExpandedCard: View {
     let session: AgentSession
     let diff: DiffState
     var now: Date = Date()
+    /// 0 folded, 1 dropped down, on a spring.
+    var details: Double = 0
+    var conversation: CardConversation = .empty
+    var actions: CardActions = .inert
 
-    nonisolated static let size = CGSize(width: 300, height: 102)
+    nonisolated static let width: CGFloat = 320
+    nonisolated static let summaryHeight: CGFloat = 102
+    nonisolated static let droppedHeight: CGFloat = 440
+
+    /// The card's size as it drops down. The spring can carry it a touch past the
+    /// bottom, and the card stretches with it.
+    nonisolated static func size(details: Double) -> CGSize {
+        let t = CGFloat(max(0, details))
+        return CGSize(width: width, height: summaryHeight + (droppedHeight - summaryHeight) * t)
+    }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            summary
+                .frame(height: Self.summaryHeight, alignment: .topLeading)
+                .contentShape(Rectangle())
+                .onTapGesture { actions.openChat() }
+
+            if details > 0.02 {
+                Rectangle()
+                    .fill(.white.opacity(0.08))
+                    .frame(height: 1)
+                    .padding(.horizontal, 13)
+                CardDetails(session: session, conversation: conversation, actions: actions)
+                    .opacity(Spring.smoothstep(details, from: 0.5, to: 0.95))
+            }
+        }
+        .frame(width: Self.width, alignment: .topLeading)
+    }
+
+    private var summary: some View {
         let accent = IslandStyle.ring(for: session)
 
-        VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Circle()
                     .fill(IslandStyle.brand(session.kind))
@@ -64,18 +99,21 @@ struct ExpandedCard: View {
                 Text(session.elapsedText(now: now))
                     .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(.white.opacity(0.45))
-                HStack(spacing: 2) {
-                    Text("Open")
-                    Image(systemName: "arrow.up.right")
+                Button(action: actions.openChat) {
+                    HStack(spacing: 2) {
+                        Text("Open")
+                        Image(systemName: "arrow.up.right")
+                    }
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.6))
                 }
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.white.opacity(0.55))
+                .buttonStyle(.plain)
+                DropDownButton(isOpen: details > 0.5, needsYou: conversation.ask != nil, action: actions.toggleDetails)
             }
             .padding(.top, 2)
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 10)
-        .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
     }
 
     private var activitySymbol: String {
@@ -89,6 +127,37 @@ struct ExpandedCard: View {
         case .complete: "checkmark.circle.fill"
         case .working, .idle, .waiting: "bolt.fill"
         }
+    }
+}
+
+/// The chevron that drops the card down to show more, with a dot when something
+/// is waiting on the user.
+private struct DropDownButton: View {
+    let isOpen: Bool
+    let needsYou: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9.5, weight: .bold))
+                .rotationEffect(.degrees(isOpen ? 180 : 0))
+                .foregroundStyle(.white.opacity(0.85))
+                .frame(width: 20, height: 18)
+                .background(.white.opacity(isOpen ? 0.16 : 0.1), in: Capsule())
+                .overlay(alignment: .topTrailing) {
+                    if needsYou {
+                        Circle()
+                            .fill(IslandStyle.question)
+                            .frame(width: 6, height: 6)
+                            .offset(x: 1, y: -1)
+                    }
+                }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(isOpen ? "Show less" : "Show more: activity, replies, and answers")
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isOpen)
     }
 }
 

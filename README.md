@@ -28,8 +28,20 @@ Hovering over a circle makes it swell slightly; nothing else happens until you c
   - For Claude: Default, Accept edits, Auto, Plan, or Bypass.
   - For Codex: Read only, Auto, Full access, or Plan.
 - The diff counts uncommitted changes against the last commit, including new files. Git runs with the repository's hooks, fsmonitor, and diff drivers disabled, and never takes the index lock.
-- **Click the card** to open that chat.
+- **Click the card**, or **Open ↗**, to open that chat: the exact chat in the Claude app, or the thread in Codex.
 - **Click the circle again**, or anywhere else, to close the card without leaving what you are doing.
+
+**The drop-down.** The chevron at the bottom right of the card drops it down to show more. A card whose agent is waiting on you opens this way on its own, and its chevron carries an amber dot.
+- **Answer Claude's questions.** When Claude asks with AskUserQuestion, the card shows the questions and their options. A single question is answered as soon as you click an option. With several questions, or several answers allowed, pick them and press **Send answers**. You can also type your own answer in the field.
+- **Review a plan.** When Claude finishes a plan, the card shows it. **Approve** lets Claude go ahead in the mode it planned from. **Approve, auto-accept edits** switches to accept-edits as it goes. To ask for changes, type them in the field and press Return; Claude stays in plan mode.
+  - Claude's own dialog stays up the whole time. Whichever you answer first wins, and the other one goes away.
+- **See what it did.** A timeline shows what you asked, what the agent said, each tool it ran, and anything that failed, newest at the bottom. It works for Codex threads too.
+- **Send the next message.** Type in the field and press Return.
+  - **A chat in the Claude app:** Agent Island opens that chat, pastes the message into its own message box, and presses Return, so it goes as your own message, exactly as if you had typed it there. If Claude is busy, Claude queues it the way it does anything typed mid-turn. The Island page can make Return only paste, to send from Claude yourself.
+    - Pasting takes Accessibility permission (Island page, or the prompt macOS shows the first time). Without it, the chat opens and the message waits on your clipboard for a ⌘V.
+    - Keys are only pressed while Claude is in front with a text box focused in the lower half of its window. If Claude's box already has something typed in it, the message is pasted but not sent.
+  - **A terminal session:** once the turn has ended, the message reaches Claude through a hook, marked as coming from Agent Island. While Claude is still working it waits for the turn to end; the × takes it back. Sessions that were already open when the hooks changed need a restart first, because Claude Code reads hooks when a session starts.
+  - Codex threads show the timeline only; reply to them in the Codex app.
 
 **Drag a circle** to move it to the other side of the notch, or to reorder it:
 - The other circles slide aside to make room while you drag.
@@ -77,16 +89,20 @@ The first launch opens on **Hooks**, so you can decide there whether Agent Islan
 The app finds sessions without hooks, but hooks make it precise. Without hooks, a permission prompt looks the same as a long-running tool.
 
 - **Claude Code.** **Add Hooks** on the window's Hooks page, *Add Claude Hooks* in the menu, or `AgentIsland --install-hooks` adds entries to `~/.claude/settings.json`.
-  - Each entry runs `agent-island-hook claude` with `async: true`, so it never blocks a turn and never prints anything that could affect a permission decision.
+  - Almost every entry runs `agent-island-hook claude` with `async: true`, so it never blocks a turn and never prints anything that could affect a permission decision.
   - The events covered are SessionStart, UserPromptSubmit, UserPromptExpansion, PreToolUse (for AskUserQuestion and ExitPlanMode only), PostToolUse, PostToolUseFailure, PermissionRequest, PermissionDenied, Notification, Stop, StopFailure, SessionEnd, PreCompact, and PostCompact.
-  - When a new version listens for more events, it adds them at launch to hooks it installed before. Hooks you never added, or that run another copy of the app, are left alone.
+  - Two entries run `agent-island-hook claude --reply` and wait, so the card can answer:
+    - **PermissionRequest for AskUserQuestion and ExitPlanMode.** Claude Code shows its own dialog at the same moment, and the first answer wins. The helper prints a decision only when you answer on the card.
+    - **Stop**, with `asyncRewake`. It waits in the background after each turn, so it never holds a turn up. A message typed on the card makes it exit with status 2, which is what wakes the session.
+  - A waiting hook gives up within 2 seconds unless the app says it will answer. The app lets go at once of a `Stop` from a session the Claude registry doesn't list, so a headless `claude -p` run never waits. A waiting hook lasts a day at most.
+  - When a new version adds entries or changes how one runs, it updates hooks it installed before, at launch. Hooks you never added, or that run another copy of the app, are left alone.
   - The original file is backed up to `settings.json.agent-island.bak` before anything changes. Installing twice changes nothing.
   - To remove them, use **Remove Hooks** or `AgentIsland --uninstall-hooks`. This removes only Agent Island's entries.
 - **Codex.** Opt in from the Hooks page or the menu, which writes `~/.codex/hooks/hooks.json`. Codex may ask you to trust the new hooks the first time. Codex works without hooks because its rollout files already report every status. Hooks can still catch approval requests that aren't written to rollouts.
 
 > **The hook command is an absolute path into the app bundle.** If you move or rename `AgentIsland.app`, the Hooks page says the hooks point at another copy of the app. Press **Repair** to point them here. Until then every hook silently runs a binary that is no longer there.
 
-The helper sends each hook's input to the app over a Unix socket at `~/Library/Application Support/AgentIsland/island.sock`. It gives up after 300ms and always exits 0, so a closed app never slows an agent down.
+The helper sends each hook's input to the app over a Unix socket at `~/Library/Application Support/AgentIsland/island.sock`. It gives up after 300ms if the app is closed, so a closed app never slows an agent down. Only the two waiting entries ever print anything or exit with a status other than 0.
 
 ## What gets detected
 
@@ -127,6 +143,9 @@ swift build && swift test
 ./scripts/simulate.sh            # with the app running: walks a fake Claude
                                  # session and Codex thread through every status,
                                  # and the Claude one through /compact and /review
+./scripts/simulate.sh ask        # leaves a question, then a plan, waiting for you
+                                 # to answer on the card, and prints what Claude
+                                 # would have received
 ```
 
 `simulate.sh` pipes hook payloads through the real helper binary. To check the result without looking at the screen, run `AgentIsland --probe 45 &` first; the probe prints each status change. You can override any preference for one run from the command line, for example `--probe 30 -visibility popThenTuck -tuckAfter 3`.
@@ -144,3 +163,4 @@ The code is split into three parts:
 - CPU is about 0.1% when nothing is happening and about 3.5–4% while an agent works, in a release build.
 - Codex approval requests may not appear in rollout files. If a Codex circle never turns amber, add the Codex hooks.
 - Clicking a terminal session brings its terminal app forward but can't pick the exact tab.
+- The app is signed ad hoc, so macOS treats each rebuild as a new app: after `./scripts/bundle.sh`, turn Agent Island off and on again under Accessibility for pasting to keep working.

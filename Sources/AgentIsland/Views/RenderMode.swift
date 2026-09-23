@@ -20,6 +20,9 @@ enum RenderMode {
         write(effortSheet(), to: directory.appendingPathComponent("efforts.png"))
         write(cardSheet(), to: directory.appendingPathComponent("card.png"))
         write(commandSheet(), to: directory.appendingPathComponent("command.png"))
+        // Scroll views and text fields only draw through AppKit.
+        writeThroughWindow(conversationSheet(), size: CGSize(width: 1410, height: 520),
+                           to: directory.appendingPathComponent("conversation.png"))
         write(dragSheet(), to: directory.appendingPathComponent("drag.png"))
         write(modelDragSheet(), to: directory.appendingPathComponent("drag-model.png"))
         write(mascotSheet(), to: directory.appendingPathComponent("mascots.png"))
@@ -62,6 +65,26 @@ enum RenderMode {
                 try? data.write(to: url)
                 print("wrote \(url.path)")
             }
+        }
+        window.orderOut(nil)
+    }
+
+    /// Draws a view in a real window kept out of sight, for views ImageRenderer
+    /// leaves blank: scroll views and text fields.
+    private static func writeThroughWindow(_ view: some View, size: CGSize, to url: URL) {
+        let hosting = NSHostingView(rootView: view.frame(width: size.width, height: size.height))
+        hosting.frame = CGRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = hosting
+        window.alphaValue = 0
+        window.orderFrontRegardless()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+
+        guard let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return }
+        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+        if let data = bitmap.representation(using: .png, properties: [:]) {
+            try? data.write(to: url)
+            print("wrote \(url.path)")
         }
         window.orderOut(nil)
     }
@@ -209,6 +232,97 @@ enum RenderMode {
                 frame("clicked: pouring, \(Int(openness * 100))%", layouts: layouts, openness: openness)
             }
             frame("open: click the card to go to the chat", layouts: layouts, openness: 1)
+        }
+        .background(backdrop)
+    }
+
+    /// The card dropped down: a question to answer, a plan to approve, and the
+    /// timeline with the message field, side by side.
+    private static func conversationSheet() -> some View {
+        let geometry = sampleGeometry()
+        let start = Date().addingTimeInterval(-300)
+        func at(_ minutes: Double) -> Date { start.addingTimeInterval(minutes * 60) }
+
+        let activity: [ActivityItem] = [
+            ActivityItem(kind: .prompt, text: "Make the circles draggable to either side of the notch", at: at(0)),
+            ActivityItem(kind: .reply, text: "I'll add a spring-driven drag, then let the arrangement decide which side a dropped circle lands on.", at: at(0.2)),
+            ActivityItem(kind: .tool, text: "Read(IslandModel.swift)", at: at(0.4)),
+            ActivityItem(kind: .tool, text: "Grep(pressBegan)", at: at(0.5)),
+            ActivityItem(kind: .tool, text: "Edit(IslandArrangement.swift)", at: at(1)),
+            ActivityItem(kind: .error, text: "error: cannot use mutating member on immutable value", at: at(1.5)),
+            ActivityItem(kind: .tool, text: "Edit(ArrangementTests.swift)", at: at(2)),
+            ActivityItem(kind: .tool, text: "Bash(swift test)", at: at(2.5)),
+            ActivityItem(kind: .reply, text: "All 63 tests pass. Circles now spring to the side they are dropped on, and a full side sends them back.", at: at(3)),
+            ActivityItem(kind: .sent, text: "Now make the landing a bit bouncier", at: at(4)),
+        ]
+        let questions = PendingAsk.questions([
+            AgentQuestion(
+                question: "Which database should the sync service use?",
+                header: "Database",
+                options: [
+                    .init(label: "Postgres (Recommended)", description: "Relational, and already in the stack"),
+                    .init(label: "SQLite", description: "One file, no server to run"),
+                    .init(label: "DynamoDB", description: "Serverless, pay per request"),
+                ]
+            ),
+        ])
+        let plan = PendingAsk.plan("""
+            # Drag circles between sides
+
+            ## Context
+            Circles all sit left of the notch. Users want to move them.
+
+            ## Steps
+            1. Track presses in `IslandHostingView`, so drags survive leaving the circle.
+            2. Add `IslandArrangement.move(_:to:at:)`, refusing a full side.
+            3. Throw the circle on release with **60%** of the pointer's speed.
+            """)
+
+        func card(_ label: String, session: AgentSession, conversation: CardConversation, draft: String = "") -> some View {
+            let layout = layout(session: session, side: .left, rank: 0, geometry: geometry, progress: 1)
+            var actions = CardActions.inert
+            actions.draft = .constant(draft)
+            return labeled(label) {
+                IslandContent(
+                    geometry: geometry,
+                    layouts: [layout],
+                    clock: 1.1,
+                    petID: PetCatalog.preferredPetID(),
+                    card: IslandCardState(
+                        id: layout.id,
+                        openness: 1,
+                        details: 1,
+                        diff: .ready(DiffStat(added: 128, removed: 14, files: 3)),
+                        conversation: conversation
+                    ),
+                    actions: actions
+                )
+                .frame(width: 470, height: 500, alignment: .topLeading)
+                .clipped()
+            }
+        }
+
+        var asking = sampleSession(kind: .claude, status: .question, effort: .high, title: "Sync service",
+                                   detail: "Which database should the sync service use?")
+        asking.permissionMode = "auto"
+        var planning = sampleSession(kind: .claude, status: .plan, effort: .xhigh, title: "Drag circles between sides",
+                                     detail: "Plan ready for review")
+        planning.planMode = true
+        var done = sampleSession(kind: .claude, status: .complete, effort: .xhigh, ultra: true,
+                                 title: "Dynamic island floating chat app")
+        done.permissionMode = "acceptEdits"
+
+        return HStack(alignment: .top, spacing: 0) {
+            card("a question: click an option to answer",
+                 session: asking,
+                 conversation: CardConversation(ask: questions, activity: Array(activity.prefix(3)), route: .whenDone, queued: nil, notice: nil))
+            card("a plan: approve, or type what to change",
+                 session: planning,
+                 conversation: CardConversation(ask: plan, activity: Array(activity.prefix(2)), route: .whenDone, queued: nil, notice: nil))
+            card("done: the timeline, and the next message",
+                 session: done,
+                 conversation: CardConversation(ask: nil, activity: activity, route: .paste, queued: nil, notice: nil),
+                 draft: "Now make the landing a bit bouncier")
         }
         .background(backdrop)
     }

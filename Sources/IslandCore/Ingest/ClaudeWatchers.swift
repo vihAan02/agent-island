@@ -155,7 +155,7 @@ public actor ClaudeTranscriptWatcher {
     /// Pulls the signals out of one transcript line. Static so it can be tested directly.
     public static func signals(in line: Data) -> [TranscriptSignal] {
         guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return [] }
-        var signals: [TranscriptSignal] = []
+        var signals: [TranscriptSignal] = activity(in: object).map(TranscriptSignal.activity)
 
         if let effort = EffortTier.parse(object["effort"] as? String) {
             signals.append(.effort(effort))
@@ -202,6 +202,81 @@ public actor ClaudeTranscriptWatcher {
             }
         }
         return signals
+    }
+
+    /// The timeline rows in one transcript line: what the user typed, what Claude
+    /// wrote, each tool it called, and each call that failed.
+    static func activity(in object: [String: Any]) -> [ActivityItem] {
+        guard (object["isMeta"] as? Bool) != true, (object["isSidechain"] as? Bool) != true else { return [] }
+        let at = CodexRolloutParser.timestamp(object["timestamp"] as? String)
+        let message = object["message"] as? [String: Any]
+
+        switch object["type"] as? String {
+        case "user":
+            if let text = message?["content"] as? String {
+                return userText(text).map { [ActivityItem(kind: .prompt, text: $0, at: at)] } ?? []
+            }
+            let blocks = (message?["content"] as? [[String: Any]]) ?? []
+            return blocks.compactMap { block in
+                switch block["type"] as? String {
+                case "text":
+                    return userText(block["text"] as? String ?? "").map { ActivityItem(kind: .prompt, text: $0, at: at) }
+                case "tool_result" where (block["is_error"] as? Bool) == true:
+                    let text = (block["content"] as? String)
+                        ?? ((block["content"] as? [[String: Any]])?.first?["text"] as? String)
+                        ?? "Failed"
+                    return ActivityItem(kind: .error, text: ActivityItem.clip(text, 160), at: at)
+                default:
+                    return nil
+                }
+            }
+
+        case "assistant":
+            let blocks = (message?["content"] as? [[String: Any]]) ?? []
+            return blocks.compactMap { block in
+                switch block["type"] as? String {
+                case "text":
+                    let text = ActivityItem.clip(block["text"] as? String ?? "")
+                    return text.isEmpty ? nil : ActivityItem(kind: .reply, text: text, at: at)
+                case "tool_use":
+                    let name = block["name"] as? String
+                    let text: String? = switch name {
+                    case "AskUserQuestion": ToolSummary.describe(toolName: name, toolInput: block["input"]).map { "Asked: \($0)" }
+                    case "ExitPlanMode": "Wrote a plan for review"
+                    default: ToolSummary.describe(toolName: name, toolInput: block["input"])
+                    }
+                    return text.map { ActivityItem(kind: .tool, text: $0, at: at) }
+                default:
+                    return nil
+                }
+            }
+
+        case "system" where (object["subtype"] as? String) == "compact_boundary":
+            return [ActivityItem(kind: .note, text: "Conversation compacted", at: at)]
+
+        default:
+            return []
+        }
+    }
+
+    /// A user line as the user typed it. Slash commands show as `/name args`; the
+    /// wrappers Claude adds around command output and reminders are not shown.
+    private static func userText(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("<command-name>") {
+            func tag(_ name: String) -> String? {
+                guard
+                    let open = trimmed.range(of: "<\(name)>"),
+                    let close = trimmed.range(of: "</\(name)>", range: open.upperBound..<trimmed.endIndex)
+                else { return nil }
+                return String(trimmed[open.upperBound..<close.lowerBound]).trimmingCharacters(in: .whitespaces)
+            }
+            guard let command = tag("command-name") else { return nil }
+            let arguments = tag("command-args") ?? ""
+            return ActivityItem.clip(arguments.isEmpty ? command : "\(command) \(arguments)")
+        }
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("<") else { return nil }
+        return ActivityItem.clip(trimmed)
     }
 
     private static func firstText(in object: [String: Any]) -> String? {

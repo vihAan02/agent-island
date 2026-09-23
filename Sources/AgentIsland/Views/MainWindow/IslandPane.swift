@@ -53,12 +53,46 @@ struct IslandPane: View {
                 Text(circlesFooter)
             }
 
+            Section {
+                Picker("Return on a card", selection: $settings.pasteSends) {
+                    Text("Pastes and sends").tag(true)
+                    Text("Only pastes").tag(false)
+                }
+                .pickerStyle(.segmented)
+
+                LabeledContent("Accessibility") {
+                    if isAllowed {
+                        Label("Allowed", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(IslandStyle.complete)
+                    } else {
+                        Button("Allow\u{2026}") {
+                            ChatPaster.requestPermission()
+                            recheck()
+                        }
+                    }
+                }
+            } header: {
+                Text("Messages")
+            } footer: {
+                Text("A message typed on a card goes into that chat's own box in the Claude app, as if you had typed it there. Pasting takes Accessibility permission; without it, the chat opens and the message waits on your clipboard.")
+            }
+
             Section("Codex Pet") {
                 PetPicker(selection: $settings.codexPetID)
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Island")
+        .onAppear(perform: recheck)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in recheck() }
+    }
+
+    /// Whether macOS lets the app paste into Claude. Read when the page shows and each
+    /// time the app comes back from System Settings.
+    @State private var isAllowed = ChatPaster.isAllowed
+
+    private func recheck() {
+        isAllowed = ChatPaster.isAllowed
     }
 
     private var circlesFooter: String {

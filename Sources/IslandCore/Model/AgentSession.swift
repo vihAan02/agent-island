@@ -134,6 +134,8 @@ public struct AgentSession: Identifiable, Sendable, Equatable {
     public var repo: String
     public var branch: String?
     public var pid: Int32?
+    /// The Claude app's id for this chat, which its links take. Nil outside the app.
+    public var hostSessionID: String?
     public var status: AgentStatus
     public var effort: EffortTier
     /// True for Claude ultracode and Codex ultra effort. Drives the aurora.
@@ -193,6 +195,22 @@ public struct AgentSession: Identifiable, Sendable, Equatable {
         self.flashRevertAt = nil
         self.permissionMode = nil
         self.command = nil
+    }
+
+    /// The Claude app's link to this chat. It takes the app's own `local_` id, from
+    /// the session registry; given the Claude Code session id it logs
+    /// "invalid ?session" and stays where it was.
+    public var claudeAppLink: URL? {
+        guard let host = hostSessionID, host.hasPrefix("local_") else { return nil }
+        var components = URLComponents()
+        components.scheme = "claude"
+        components.host = "code"
+        components.path = "/continue"
+        components.queryItems = [
+            URLQueryItem(name: "session", value: host),
+            URLQueryItem(name: "source", value: "agent_island"),
+        ]
+        return components.url
     }
 
     /// The circle turns into a spinner while a slash command runs. A question or an

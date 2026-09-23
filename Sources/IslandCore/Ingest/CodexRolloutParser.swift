@@ -101,6 +101,9 @@ public struct CodexRolloutParser: Sendable {
                pendingUserInput.remove(callID) != nil {
                 return [CodexEvent(threadID: threadID, kind: .activity, at: at)]
             }
+            if itemType == "message", let item = Self.message(payload, at: at) {
+                return [CodexEvent(threadID: threadID, kind: .message(item), at: at)]
+            }
             if itemType == "function_call" || itemType == "custom_tool_call",
                let detail = Self.describeToolCall(
                    name: payload["name"] as? String,
@@ -151,6 +154,23 @@ public struct CodexRolloutParser: Sendable {
         }
     }
 
+    /// A user or assistant message, for the timeline. Codex wraps its own context in
+    /// user messages too, always as tagged blocks, which are left out.
+    static func message(_ payload: [String: Any], at: Date) -> ActivityItem? {
+        let kind: ActivityItem.Kind
+        switch payload["role"] as? String {
+        case "user": kind = .prompt
+        case "assistant": kind = .reply
+        default: return nil
+        }
+        let text = ((payload["content"] as? [[String: Any]]) ?? [])
+            .compactMap { $0["text"] as? String }
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<") }
+            .joined(separator: " ")
+        let clipped = ActivityItem.clip(text)
+        return clipped.isEmpty ? nil : ActivityItem(kind: kind, text: clipped, at: at)
+    }
+
     /// `rollout-2026-09-17T11-47-51-<uuid>.jsonl`
     public static func threadID(fromFileName path: String) -> String? {
         let name = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
@@ -162,8 +182,15 @@ public struct CodexRolloutParser: Sendable {
 
     static func timestamp(_ raw: String?) -> Date? {
         guard let raw else { return nil }
-        let withFraction = ISO8601DateFormatter()
-        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return withFraction.date(from: raw) ?? ISO8601DateFormatter().date(from: raw)
+        return fractionalFormatter.date(from: raw) ?? plainFormatter.date(from: raw)
     }
+
+    // Parsing is thread-safe, and every transcript line has a timestamp, so these
+    // are made once rather than per line.
+    nonisolated(unsafe) private static let fractionalFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    nonisolated(unsafe) private static let plainFormatter = ISO8601DateFormatter()
 }

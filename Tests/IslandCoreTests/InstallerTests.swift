@@ -43,23 +43,31 @@ struct HookInstallerTests {
         #expect(FileManager.default.fileExists(atPath: path + ".agent-island.bak"))
     }
 
-    @Test("Our entries run without blocking the turn")
+    @Test("Our entries never block a turn, except the two kinds the island answers")
     func entriesAreAsync() throws {
         let path = try temporarySettings(nil)
         defer { try? FileManager.default.removeItem(atPath: (path as NSString).deletingLastPathComponent) }
 
         try HookInstaller.install(settingsPath: path, binaryPath: "/tmp/agent-island-hook", agent: .claude)
         let hooks = try #require(try json(at: path)["hooks"] as? [String: Any])
-        let entries = hooks.values
-            .compactMap { $0 as? [[String: Any]] }
-            .flatMap { $0 }
-            .flatMap { ($0["hooks"] as? [[String: Any]]) ?? [] }
 
-        #expect(!entries.isEmpty)
-        for entry in entries {
-            #expect(entry["async"] as? Bool == true)
-            #expect((entry["args"] as? [String])?.first == "claude")
+        var waiting: [String] = []
+        for (event, value) in hooks {
+            for group in (value as? [[String: Any]]) ?? [] {
+                for entry in (group["hooks"] as? [[String: Any]]) ?? [] {
+                    #expect((entry["args"] as? [String])?.first == "claude")
+                    if entry["async"] as? Bool == true { continue }
+                    waiting.append("\(event) \(group["matcher"] as? String ?? "")")
+                    #expect((entry["args"] as? [String])?.contains("--reply") == true)
+                }
+            }
         }
+        // AskUserQuestion and plans race Claude's own dialog; the end of a turn waits
+        // in the background (asyncRewake) and never holds the turn.
+        #expect(waiting.sorted() == ["PermissionRequest AskUserQuestion|ExitPlanMode", "Stop "])
+
+        let stop = try #require((hooks["Stop"] as? [[String: Any]])?.first?["hooks"] as? [[String: Any]])
+        #expect(stop.first?["asyncRewake"] as? Bool == true)
     }
 
     @Test("Installing twice does not pile up entries")

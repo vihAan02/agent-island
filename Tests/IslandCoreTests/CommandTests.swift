@@ -194,10 +194,14 @@ struct CommandTests {
              "timestamp":"2026-09-23T13:14:50.125Z","compactMetadata":{"trigger":"manual"}}
             """
         let signals = ClaudeTranscriptWatcher.signals(in: Data(boundary.utf8))
-        guard case .commandFinished(let name, let at)? = signals.first else {
+        let ends = signals.compactMap { signal -> (String, Date?)? in
+            if case .commandFinished(let name, let at) = signal { (name, at) } else { nil }
+        }
+        guard let (name, at) = ends.first else {
             Issue.record("no end signal in \(signals)")
             return
         }
+        #expect(signals.contains(.activity(ActivityItem(kind: .note, text: "Conversation compacted", at: at))))
         #expect(name == "compact")
         #expect(at == CodexRolloutParser.timestamp("2026-09-23T13:14:50.125Z"))
 
@@ -211,25 +215,26 @@ struct CommandTests {
         })
     }
 
-    @Test("Hooks from an older version get the new events added")
-    func missingEvents() throws {
+    @Test("Hooks from an older version get the new entries added")
+    func missingEntries() throws {
         let directory = NSTemporaryDirectory() + "island-hooks-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
         let path = directory + "/settings.json"
         let old = """
-            {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/Apps/agent-island-hook"}]}],
+            {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/Apps/agent-island-hook","args":["claude"],"async":true}]}],
                       "PreCompact":[{"hooks":[{"type":"command","command":"/usr/local/bin/my-own"}]}]}}
             """
         try Data(old.utf8).write(to: URL(fileURLWithPath: path))
 
-        let missing = HookInstaller.missingEvents(settingsPath: path, agent: .claude)
+        let missing = HookInstaller.missingEntries(settingsPath: path, agent: .claude)
         #expect(missing.contains("PreCompact"), "someone else's hook there does not count")
         #expect(missing.contains("PostCompact"))
         #expect(missing.contains("UserPromptExpansion"))
-        #expect(!missing.contains("Stop"))
+        #expect(missing.contains("Stop"), "an old fire-and-forget Stop cannot take a message")
+        #expect(missing.contains("PermissionRequest (AskUserQuestion|ExitPlanMode)"))
 
         try HookInstaller.install(settingsPath: path, binaryPath: "/Apps/agent-island-hook", agent: .claude)
-        #expect(HookInstaller.missingEvents(settingsPath: path, agent: .claude).isEmpty)
+        #expect(HookInstaller.missingEntries(settingsPath: path, agent: .claude).isEmpty)
     }
 }

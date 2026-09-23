@@ -55,6 +55,27 @@ Everything in the plan is built. `swift build` is clean and 49 tests passed on t
 > - The app adds missing events to its own installed hooks at launch (`HookManager.updateInstalledHooks`).
 > - `simulate.sh` now walks `/compact` and a `/review` with a permission prompt in it. Every step landed under `--probe`.
 > - Not yet checked by a person: a real `/compact` in a live session.
+>
+> **Also added (2026-09-23): answering and replying from the card.** The card's chevron drops it down (`detailsOpenness`, a spring, grows it to 320×440) to show the waiting question or plan, a timeline, and a message field (`Views/CardDetails.swift`).
+> - Checked against Claude Code 2.1.280's code:
+>   - PermissionRequest hooks race the dialog in every interactive path (terminal and the desktop app's SDK sessions). The first answer wins.
+>   - AskUserQuestion is answered by `allow` with `updatedInput.answers`, keyed by question text. ExitPlanMode is approved by `allow` echoing the input; ExitPlanMode then restores the mode from before planning by itself. `deny` with a message keeps Claude planning.
+>   - `asyncRewake` hooks run in the background when the session is interactive or has streaming input, and exit 2 queues stderr as the next message. `rewakeMessage` and `rewakeSummary` set the framing. The hook `timeout` is not capped.
+>   - Claude.app's `claude://code/continue` takes no prompt, so there is no URL route in.
+> - Wire protocol (`HookReply`, `HookReplyChannel`): the helper writes, half-closes, and waits up to 2s for `K`; then `O…` goes to stdout, exit 0, and `W…` goes to stderr, exit 2. EOF means no answer.
+> - `IslandModel` holds `asks` and `wakeChannels`, lets them go when the question is answered in the chat or a new turn starts, and cancels a `Stop` from any session without a registry pid (headless runs).
+> - Timeline: `ActivityItem`s from transcripts (`ClaudeTranscriptWatcher.activity`) and Codex rollouts (`CodexRolloutParser.message`), 80 per session, kept by the model, not the reducer.
+> - The panel now `canBecomeKey` with `becomesKeyOnlyIfNeeded`, so only the text field takes focus. Clicks on the card go to SwiftUI; only circles are handled in AppKit.
+> - `--render` writes `conversation.png` through a hidden window, since ImageRenderer leaves scroll views and text fields blank.
+> - Tests: the reply JSON, decoding, a socket round trip, and the real helper binary against a test server (decision, wake, quiet, and no app). Live under `--probe`: a waiting question showed, then was let go when answered elsewhere; a headless `Stop` was let go in 0.04s.
+> - **Not yet checked by a person:** clicking and typing on the live card, with a real pointer and keyboard (`scripts/simulate.sh ask` sets it up); a real session answering from the card; a real message waking a session.
+>
+> **Also fixed and added (2026-09-23): opening the exact chat, and pasting messages into it.**
+> - **Bug:** `claude://code/continue?session=` only takes the Claude app's own id, `local_<uuid>` (`hostSessionId` in the registry file). We passed the Claude Code session id, and Claude.app logged `code entry link invalid ?session` for every click (see `~/Library/Logs/Claude/main.log`). `AgentSession.claudeAppLink` now builds the link from `hostSessionID`. Checked live: opening this session's `local_` link logged nothing, where a bad id logs the warning.
+> - `ChatPaster`: for a chat in the Claude app, Return on the card opens the chat, waits for Claude to be frontmost, finds the message box through Accessibility (focused `AXTextArea` in the lower half of the window, or the lowest one, focused first; Electron's tree is switched on with `AXManualAccessibility`), pastes with ⌘V via `CGEvent.postToPid`, confirms the text is in the box, and presses Return. It never sends when the box already held text. The clipboard is put back afterwards.
+> - No Accessibility permission, or no box found: the chat opens and the message stays on the clipboard, with a note on the card. `IslandSettings.pasteSends` (Island page) makes Return only paste.
+> - Terminal sessions still use the Stop hook's `asyncRewake`.
+> - **Not yet checked by a person:** the paste itself. This environment has no Accessibility permission, so it has never run against a real Claude window. Ad-hoc signing means the permission has to be granted again after each rebuild.
 
 **Already working**
 - **Detection.**

@@ -4,6 +4,8 @@
 # socket, the decoding, and the reducer run together.
 #
 #   scripts/simulate.sh [seconds per step]      (default 3)
+#   scripts/simulate.sh ask                     a question, then a plan, left
+#                                                waiting for you to answer on the card
 #
 # Start the app first:  ./scripts/bundle.sh && open build/AgentIsland.app
 # Or check it headlessly:
@@ -18,6 +20,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 hook="${AGENT_ISLAND_HOOK:-$root/build/AgentIsland.app/Contents/MacOS/agent-island-hook}"
 socket="${AGENT_ISLAND_SOCKET:-$HOME/Library/Application Support/AgentIsland/island.sock}"
 step="${1:-3}"
+[[ "$step" == "ask" ]] && step=3
 
 if [[ ! -x "$hook" ]]; then
     echo "No hook helper at $hook. Build it with ./scripts/bundle.sh first." >&2
@@ -141,6 +144,45 @@ codex_walk() {
     say codex gone "SessionEnd: the circle slides back in"
     codex SessionEnd
 }
+
+# answer <json> -- sends a hook that waits for an answer from the island, and
+# prints what the helper would hand Claude.
+answer() {
+    local out err status
+    err="$(mktemp)"
+    out="$(printf '%s' "$1" | env -u CLAUDE_EFFORT "$hook" claude --reply 2>"$err")" && status=0 || status=$?
+    printf '         exit %s\n' "$status"
+    [[ -n "$out" ]] && printf '         stdout: %s\n' "$out"
+    [[ -s "$err" ]] && printf '         stderr: %s\n' "$(cat "$err")"
+    rm -f "$err"
+}
+
+ask_walk() {
+    local base="\"session_id\":\"$claude_id\",\"cwd\":\"$root\",\"permission_mode\":\"default\""
+    claude UserPromptSubmit '"prompt":"Set up the sync service"'
+    sleep 1
+
+    say claude question "AskUserQuestion: click the circle, then an option on the card"
+    claude PreToolUse '"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which database should the sync service use?","header":"Database","multiSelect":false,"options":[{"label":"Postgres","description":"Relational, already in the stack"},{"label":"SQLite","description":"One file, no server"}]}]}'
+    answer "{\"hook_event_name\":\"PermissionRequest\",$base,\"tool_name\":\"AskUserQuestion\",\"tool_input\":{\"questions\":[{\"question\":\"Which database should the sync service use?\",\"header\":\"Database\",\"multiSelect\":false,\"options\":[{\"label\":\"Postgres\",\"description\":\"Relational, already in the stack\"},{\"label\":\"SQLite\",\"description\":\"One file, no server\"}]}]}}"
+    claude PostToolUse '"tool_name":"AskUserQuestion"'
+
+    say claude plan "ExitPlanMode: approve it, or type a change and press Return"
+    claude PreToolUse '"tool_name":"ExitPlanMode","tool_input":{"plan":"# Sync service\n\n1. Add a Postgres table\n2. Write the sync loop"}'
+    answer "{\"hook_event_name\":\"PermissionRequest\",$base,\"tool_name\":\"ExitPlanMode\",\"tool_input\":{\"plan\":\"# Sync service\\n\\n1. Add a Postgres table\\n2. Write the sync loop\"}}"
+    claude PostToolUse '"tool_name":"ExitPlanMode"'
+
+    claude Stop '"stop_hook_active":false'
+    sleep 2
+    claude SessionEnd '"reason":"prompt_input_exit"'
+}
+
+if [[ "${1:-}" == "ask" ]]; then
+    echo "Simulating $claude_id waiting on you. Answer on the card; this prints what Claude would get."
+    ask_walk
+    echo "Done."
+    exit 0
+fi
 
 echo "Simulating $claude_id and $codex_id, ${step}s per step"
 claude_walk &

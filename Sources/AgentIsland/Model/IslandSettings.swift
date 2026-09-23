@@ -60,6 +60,11 @@ final class IslandSettings {
     var newCircleSide: IslandSide {
         didSet { defaults.set(newCircleSide.rawValue, forKey: "newCircleSide") }
     }
+    /// A message typed on a card is pasted into its chat in the Claude app, then sent
+    /// with Return. Off, it is only pasted, to send from there.
+    var pasteSends: Bool {
+        didSet { defaults.set(pasteSends, forKey: "pasteSends") }
+    }
 
     init() {
         defaults.register(defaults: [
@@ -68,6 +73,7 @@ final class IslandSettings {
             "visibility": Visibility.stayWhileWorking.rawValue,
             "tuckAfter": 5.0,
             "newCircleSide": IslandSide.left.rawValue,
+            "pasteSends": true,
         ])
         watchClaude = defaults.bool(forKey: "watchClaude")
         watchCodex = defaults.bool(forKey: "watchCodex")
@@ -76,6 +82,7 @@ final class IslandSettings {
         tuckAfter = defaults.double(forKey: "tuckAfter")
         codexPetID = defaults.string(forKey: "codexPetID") ?? PetCatalog.preferredPetID()
         newCircleSide = IslandSide(rawValue: defaults.string(forKey: "newCircleSide") ?? "") ?? .left
+        pasteSends = defaults.bool(forKey: "pasteSends")
     }
 
     // MARK: - Hooks
