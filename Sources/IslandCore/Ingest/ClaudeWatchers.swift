@@ -160,6 +160,9 @@ public actor ClaudeTranscriptWatcher {
         if let effort = EffortTier.parse(object["effort"] as? String) {
             signals.append(.effort(effort))
         }
+        if let mode = object["permissionMode"] as? String, !mode.isEmpty {
+            signals.append(.permissionMode(mode))
+        }
         if (object["isApiErrorMessage"] as? Bool) == true {
             let text = Self.firstText(in: object)
             signals.append(.apiError(text))

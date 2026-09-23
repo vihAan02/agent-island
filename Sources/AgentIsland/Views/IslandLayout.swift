@@ -13,6 +13,8 @@ struct BubbleLayout: Identifiable, Equatable {
     var diameter: CGFloat
     /// 0 = fully tucked inside the notch, 1 = fully out.
     var progress: Double
+    /// Grows a touch while the pointer rests on it.
+    var hoverScale: Double = 1
 
     var isOnRightSide: Bool { side == .right }
 
@@ -20,11 +22,12 @@ struct BubbleLayout: Identifiable, Equatable {
     var contentOpacity: Double { Spring.smoothstep(progress, from: 0.45, to: 0.85) }
     var scale: Double { 0.62 + 0.38 * min(max(progress, 0), 1) }
     var rect: CGRect {
-        CGRect(
-            x: center.x - diameter / 2,
-            y: center.y - diameter / 2,
-            width: diameter,
-            height: diameter
+        let size = diameter * CGFloat(hoverScale)
+        return CGRect(
+            x: center.x - size / 2,
+            y: center.y - size / 2,
+            width: size,
+            height: size
         )
     }
 }
@@ -51,6 +54,8 @@ enum IslandLayout {
             // A circle with no room on either side stays inside the notch.
             guard let side = bubble.side else { return nil }
 
+            let hoverScale = bubble.hover.value(at: now)
+
             if let drag, drag.id == bubble.id {
                 return BubbleLayout(
                     id: bubble.id,
@@ -59,7 +64,8 @@ enum IslandLayout {
                     rank: bubble.rank,
                     center: drag.center,
                     diameter: geometry.circleDiameter,
-                    progress: 1
+                    progress: 1,
+                    hoverScale: hoverScale
                 )
             }
 
@@ -78,7 +84,8 @@ enum IslandLayout {
                     y: start.y + (end.y - start.y) * progress
                 ),
                 diameter: geometry.circleDiameter,
-                progress: progress
+                progress: progress,
+                hoverScale: hoverScale
             )
         }
         // The dragged circle is drawn last, so it passes over the others.
@@ -107,11 +114,35 @@ enum IslandLayout {
         let maxX = max(minX, geometry.panelFrame.width - size.width - 12)
         return CGRect(
             x: min(max(centerX - size.width / 2, minX), maxX),
-            y: geometry.notchRect.maxY + 5,
+            // Far enough below the row that the open card does not fuse with the
+            // circles beside the one it came from.
+            y: geometry.notchRect.maxY + 9,
             width: size.width,
             height: size.height
         )
     }
+
+    /// The card as it pours out of its circle: `openness` 0 is the circle itself,
+    /// 1 the full card below the menu bar. A spring can carry it a little past 1.
+    static func cardFrame(
+        for layout: BubbleLayout,
+        openness: Double,
+        geometry: NotchGeometry
+    ) -> (rect: CGRect, cornerRadius: CGFloat) {
+        let target = cardRect(around: layout.center.x, geometry: geometry)
+        let start = layout.rect
+        let t = CGFloat(max(0, openness))
+        let rect = CGRect(
+            x: start.minX + (target.minX - start.minX) * t,
+            y: start.minY + (target.minY - start.minY) * t,
+            width: start.width + (target.width - start.width) * t,
+            height: start.height + (target.height - start.height) * t
+        )
+        let radius = start.width / 2 + (cardCornerRadius - start.width / 2) * min(t, 1)
+        return (rect, radius)
+    }
+
+    static let cardCornerRadius: CGFloat = 18
 
     /// How far the notch wall swells on each side while a circle is pulling away.
     /// This is the part that reads as the bezel stretching.

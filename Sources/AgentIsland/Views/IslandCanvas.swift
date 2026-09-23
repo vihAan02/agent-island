@@ -12,7 +12,6 @@ struct IslandCanvas: View {
     /// Shared island clock, in seconds.
     let clock: Double
     let now: Date
-    let hoveredID: String?
 
     var body: some View {
         Canvas(opaque: false, rendersAsynchronously: false) { context, _ in
@@ -27,7 +26,7 @@ struct IslandCanvas: View {
 
     private func draw(_ layout: BubbleLayout, in context: GraphicsContext) {
         let session = layout.session
-        let scale = layout.scale * (hoveredID == layout.id ? 1.08 : 1)
+        let scale = layout.scale * layout.hoverScale
         let diameter = layout.diameter * scale
         let rect = CGRect(
             x: layout.center.x - diameter / 2,

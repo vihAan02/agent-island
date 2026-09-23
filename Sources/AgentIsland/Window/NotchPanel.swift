@@ -36,6 +36,7 @@ final class PanelController {
     private(set) var panel: NotchPanel
     private(set) var geometry: NotchGeometry
     private var mouseMonitor: Any?
+    private var clickMonitor: Any?
     private var isExpanded = false
     private var screenObserver: NSObjectProtocol?
 
@@ -46,6 +47,8 @@ final class PanelController {
 
     /// Called with the panel-space mouse position, or nil when the pointer is elsewhere.
     var onHover: ((CGPoint?) -> Void)?
+    /// Called when the user clicks anywhere outside this app, which closes a card.
+    var onOutsideClick: (() -> Void)?
 
     /// Takes presses on circles: a click opens, a drag moves the circle.
     weak var pointerTarget: IslandPointerTarget? {
@@ -74,6 +77,12 @@ final class PanelController {
             MainActor.assumeIsolated { self?.updateGeometry() }
         }
 
+        // Global monitors only see events bound for other apps, so this is exactly
+        // "a click somewhere that is not the island".
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.onOutsideClick?() }
+        }
+
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] event in
             MainActor.assumeIsolated { self?.updateMousePassthrough(for: NSEvent.mouseLocation) }
             _ = event
@@ -83,6 +92,8 @@ final class PanelController {
     /// The controller lives as long as the app does; this exists for tests and teardown.
     func stopMonitoring() {
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        clickMonitor = nil
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         mouseMonitor = nil
         screenObserver = nil
@@ -135,46 +146,60 @@ final class PanelController {
 @MainActor
 protocol IslandPointerTarget: AnyObject {
     func circle(at point: CGPoint) -> String?
+    func card(at point: CGPoint) -> String?
     func pressBegan(on id: String, at point: CGPoint)
     func pressMoved(to point: CGPoint)
     func pressEnded(at point: CGPoint)
+    func cardPressed(_ id: String)
 }
 
 /// Hosts the island and handles presses on circles itself, in AppKit.
 ///
 /// SwiftUI gestures in a panel that never becomes key are unreliable for drags, and
 /// a drag has to keep going when the pointer leaves the circle it started on. So a
-/// press that lands on a circle is claimed here, from mouse down to mouse up, and
-/// everything else (the hover card) goes on to SwiftUI.
+/// press on a circle or on the open card is claimed here, from mouse down to mouse up.
 final class IslandHostingView: NSHostingView<AnyView> {
     weak var pointerTarget: IslandPointerTarget?
     private var isTracking = false
+    /// The card a press went down on; it counts if it also comes up there.
+    private var pressedCard: String?
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         // Claim the click before SwiftUI's own views can.
-        let local = convert(point, from: superview)
-        if pointerTarget?.circle(at: panelPoint(fromView: local)) != nil { return self }
+        let panel = panelPoint(fromView: convert(point, from: superview))
+        if pointerTarget?.circle(at: panel) != nil || pointerTarget?.card(at: panel) != nil { return self }
         return super.hitTest(point)
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = panelPoint(event)
-        guard let target = pointerTarget, let id = target.circle(at: point) else {
+        guard let target = pointerTarget else { return super.mouseDown(with: event) }
+        if let id = target.circle(at: point) {
+            isTracking = true
+            target.pressBegan(on: id, at: point)
+        } else if let id = target.card(at: point) {
+            pressedCard = id
+        } else {
             super.mouseDown(with: event)
-            return
         }
-        isTracking = true
-        target.pressBegan(on: id, at: point)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard isTracking else { return super.mouseDragged(with: event) }
+        guard isTracking else {
+            if pressedCard == nil { super.mouseDragged(with: event) }
+            return
+        }
         pointerTarget?.pressMoved(to: panelPoint(event))
     }
 
     override func mouseUp(with event: NSEvent) {
+        if let card = pressedCard {
+            pressedCard = nil
+            if pointerTarget?.card(at: panelPoint(event)) == card { pointerTarget?.cardPressed(card) }
+            return
+        }
         guard isTracking else { return super.mouseUp(with: event) }
         isTracking = false
         pointerTarget?.pressEnded(at: panelPoint(event))

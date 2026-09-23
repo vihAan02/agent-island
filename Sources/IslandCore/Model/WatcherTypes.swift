@@ -78,7 +78,9 @@ public struct ClaudeRegistryEntry: Sendable, Equatable, Identifiable {
 public struct CodexEvent: Sendable, Equatable {
     public enum Kind: Sendable, Equatable {
         case discovered(cwd: String, title: String?)
-        case turnContext(effort: EffortTier?, planMode: Bool)
+        case turnContext(effort: EffortTier?, planMode: Bool, sandbox: String? = nil)
+        /// The agent started a tool call; the text says what it is doing.
+        case toolCall(String)
         case taskStarted
         case taskComplete
         case turnAborted

@@ -19,6 +19,8 @@ struct Bubble: Identifiable, Equatable {
     /// make room for one another or land after a drag.
     var x: SpringMotion
     var y: SpringMotion
+    /// Its size under the pointer: 1, or a touch more while hovered.
+    var hover: SpringMotion
 
     var isRetracting: Bool { retractingSince != nil }
 
@@ -26,7 +28,7 @@ struct Bubble: Identifiable, Equatable {
     var restingCenter: CGPoint { CGPoint(x: x.to, y: y.to) }
 
     func isSliding(at now: Date) -> Bool {
-        !x.isSettled(at: now) || !y.isSettled(at: now)
+        !x.isSettled(at: now) || !y.isSettled(at: now) || !hover.isSettled(at: now)
     }
 }
 
@@ -67,19 +69,62 @@ final class IslandModel: IslandPointerTarget {
     private(set) var bubbles: [Bubble] = []
     private(set) var animationMode: AnimationMode = .paused
     private(set) var hookedSessionsSeen = false
+
+    /// The circle under the pointer. It swells a little; nothing else happens until
+    /// it is clicked.
     var hoveredID: String? {
-        didSet { if hoveredID != oldValue { publishLayout() } }
-    }
-    var expandedID: String? {
         didSet {
-            guard expandedID != oldValue else { return }
-            publishLayout()
-            onExpansionChanged?(expandedID != nil)
+            guard hoveredID != oldValue else { return }
+            let now = Date()
+            if let oldValue {
+                hovers[oldValue, default: SpringMotion(at: 1, now: now)].retarget(to: 1, at: now, tuning: .hover)
+            }
+            if let hoveredID {
+                hovers[hoveredID, default: SpringMotion(at: 1, now: now)]
+                    .retarget(to: Self.hoverScale, at: now, tuning: .hover)
+            }
+            rebuild()
         }
     }
 
-    /// Called when the hover card opens or closes, so the window can grow only when
-    /// there is something below the menu bar to show.
+    /// The circle whose card is open. Clicking the circle opens and closes it; only
+    /// clicking the card itself opens the chat. A click anywhere else closes it too.
+    private(set) var expandedID: String? {
+        didSet {
+            guard expandedID != oldValue else { return }
+            let now = Date()
+            if let expandedID {
+                // Switching straight to another circle pours its card out fresh.
+                if oldValue != nil { cardOpenness = SpringMotion(at: 0, now: now) }
+                cardID = expandedID
+                cardOpenness.retarget(to: 1, at: now, tuning: .cardOpen)
+                onExpansionChanged?(true)
+                refreshDiff(for: expandedID, force: true)
+            } else {
+                cardOpenness.retarget(to: 0, at: now, tuning: .cardClose)
+                finishClosingCard()
+            }
+            updateAnimationMode()
+            publishLayout()
+        }
+    }
+
+    /// The circle whose card is drawn: the open one, or one still folding away.
+    private(set) var cardID: String?
+    /// 0 is the circle, 1 the full card. On a spring, so the circle pours down into
+    /// the card and back up into itself.
+    private(set) var cardOpenness = SpringMotion(at: 0, now: .distantPast)
+
+    /// Lines changed in each session folder, for the card.
+    private(set) var diffs: [String: DiffState] = [:]
+    @ObservationIgnored private var diffFetchedAt: [String: Date] = [:]
+    @ObservationIgnored private var diffsInFlight: Set<String> = []
+
+    private static let hoverScale = 1.14
+    private var hovers: [String: SpringMotion] = [:]
+
+    /// Called when the card opens or finishes closing, so the window grows only
+    /// while there is something below the menu bar to show.
     var onExpansionChanged: ((Bool) -> Void)?
 
     /// Where the notch is. Set by the panel controller and re-set when screens change.
@@ -257,7 +302,10 @@ final class IslandModel: IslandPointerTarget {
             reducer.drop(id: id)
             motion.removeValue(forKey: id)
             slides.removeValue(forKey: id)
+            hovers.removeValue(forKey: id)
         }
+        // Keep an open card's diff current while the agent works.
+        if let expandedID { refreshDiff(for: expandedID) }
         rebuild()
     }
 
@@ -268,13 +316,11 @@ final class IslandModel: IslandPointerTarget {
     func setPointer(_ point: CGPoint?) {
         // A drag owns the pointer until it lets go.
         guard press?.isDragging != true else { return }
-        let hit = point.flatMap { hitTest($0) }
-        if hoveredID != hit {
-            hoveredID = hit
-            expandedID = hit
-        }
+        let hit = point.flatMap { circle(at: $0) }
+        if hoveredID != hit { hoveredID = hit }
 
-        let peeking = point.map { isInPeekZone($0) || hit != nil } ?? false
+        let onCard = point.flatMap { card(at: $0) } != nil
+        let peeking = point.map { isInPeekZone($0) || hit != nil || onCard } ?? false
         if peeking != isPeeking {
             isPeeking = peeking
             rebuild()
@@ -330,7 +376,7 @@ final class IslandModel: IslandPointerTarget {
         // off brings it back out.
         var occupying: Set<String> = []
         for session in sessions {
-            let held = press?.id == session.id
+            let held = press?.id == session.id || expandedID == session.id
             let tuck = !held && CircleMotion.shouldTuck(session, tuckAfter: tuckAfter, isPeeking: isPeeking, now: now)
             var circle = CircleMotion.advance(
                 motion[session.id],
@@ -378,6 +424,7 @@ final class IslandModel: IslandPointerTarget {
                 }
             }
             slides[id] = slide
+            let hover = hovers[id] ?? SpringMotion(at: 1, now: now)
 
             next.append(
                 Bubble(
@@ -388,16 +435,18 @@ final class IslandModel: IslandPointerTarget {
                     appearedAt: circle.appearedAt,
                     retractingSince: circle.retractingSince,
                     x: slide.x,
-                    y: slide.y
+                    y: slide.y,
+                    hover: hover
                 )
             )
         }
         released = nil
 
         // Sessions the reducer dropped outright.
-        for id in Set(motion.keys).union(slides.keys) where !liveIDs.contains(id) {
+        for id in Set(motion.keys).union(slides.keys).union(hovers.keys) where !liveIDs.contains(id) {
             motion.removeValue(forKey: id)
             slides.removeValue(forKey: id)
+            hovers.removeValue(forKey: id)
         }
         if let press, !liveIDs.contains(press.id) { cancelDrag() }
 
@@ -431,14 +480,10 @@ final class IslandModel: IslandPointerTarget {
         return rects
     }
 
-    /// The circle or open card under a point, if any.
-    func hitTest(_ point: CGPoint) -> String? {
-        if let id = circle(at: point) { return id }
-        // Keep the card open while the pointer is on it.
-        if let expandedID, let card = cardRect(for: expandedID), card.contains(point) {
-            return expandedID
-        }
-        return nil
+    /// The open card under a point, if any.
+    func card(at point: CGPoint) -> String? {
+        guard let expandedID, let card = cardRect(for: expandedID), card.contains(point) else { return nil }
+        return expandedID
     }
 
     /// The circle under a point, if any.
@@ -477,6 +522,61 @@ final class IslandModel: IslandPointerTarget {
         if working > 0 { parts.append("\(working) working") }
         if waiting > 0 { parts.append("\(waiting) waiting for you") }
         return parts.joined(separator: " \u{00b7} ")
+    }
+
+    // MARK: - Card
+
+    /// A click on a circle opens its card, or closes it if it is already open.
+    /// It never leaves the island; that is the card's job.
+    private func circleClicked(_ id: String) {
+        expandedID = expandedID == id ? nil : id
+    }
+
+    /// A click on the open card opens the chat.
+    func cardPressed(_ id: String) {
+        open(id: id)
+        expandedID = nil
+    }
+
+    /// Closes the card, as when the user clicks anywhere else.
+    func collapse() {
+        expandedID = nil
+    }
+
+    func diffState(forSession id: String) -> DiffState {
+        guard let cwd = reducer.session(id: id)?.cwd, !cwd.isEmpty else { return .unavailable }
+        return diffs[cwd] ?? .loading
+    }
+
+    /// Once the card has folded back into its circle, the window can shrink again.
+    private func finishClosingCard() {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(450))
+            guard let self, self.expandedID == nil, self.cardID != nil else { return }
+            self.cardID = nil
+            self.onExpansionChanged?(false)
+            self.updateAnimationMode()
+        }
+    }
+
+    /// Reads the session folder's `+x −y` off the main thread, at most every few seconds.
+    private func refreshDiff(for id: String, force: Bool = false) {
+        guard let cwd = reducer.session(id: id)?.cwd, !cwd.isEmpty else { return }
+        if !force, let fetched = diffFetchedAt[cwd], Date().timeIntervalSince(fetched) < 3 { return }
+        guard !diffsInFlight.contains(cwd) else { return }
+        diffsInFlight.insert(cwd)
+        diffFetchedAt[cwd] = Date()
+
+        Task.detached(priority: .utility) { [weak self] in
+            let stat = GitDiffStat.compute(in: cwd)
+            await self?.finishDiff(cwd: cwd, stat: stat)
+        }
+    }
+
+    private func finishDiff(cwd: String, stat: DiffStat?) {
+        diffsInFlight.remove(cwd)
+        let state: DiffState = stat.map { .ready($0) } ?? .unavailable
+        if diffs[cwd] != state { diffs[cwd] = state }
     }
 
     // MARK: - Actions
@@ -552,7 +652,7 @@ final class IslandModel: IslandPointerTarget {
         self.press = nil
 
         guard press.isDragging else {
-            open(id: press.id)
+            circleClicked(press.id)
             return
         }
 
@@ -633,6 +733,8 @@ final class IslandModel: IslandPointerTarget {
         let now = Date()
         var mode = AnimationMode.paused
         if press?.isDragging == true { return .emerging }
+        // The card pouring out of its circle, or back in.
+        if cardID != nil, !cardOpenness.isSettled(at: now) { return .emerging }
 
         for bubble in bubbles {
             // Gliding to make room, or landing after a drag.
@@ -661,7 +763,7 @@ final class IslandModel: IslandPointerTarget {
                 break
             }
         }
-        return hoveredID != nil ? Swift.max(mode, .ambient) : mode
+        return hoveredID != nil || expandedID != nil ? Swift.max(mode, .ambient) : mode
     }
 
     private func updateAnimationMode() {
@@ -676,4 +778,13 @@ private extension IslandSide {
 
 private extension CGRect {
     var center: CGPoint { CGPoint(x: midX, y: midY) }
+}
+
+extension SpringMotion.Tuning {
+    /// A circle swelling under the pointer: quick, with a small bounce.
+    static let hover = SpringMotion.Tuning(response: 0.3, damping: 0.55)
+    /// The card pouring out of its circle.
+    static let cardOpen = SpringMotion.Tuning(response: 0.46, damping: 0.74)
+    /// And folding back in, briskly and without a wobble.
+    static let cardClose = SpringMotion.Tuning(response: 0.26, damping: 0.95)
 }

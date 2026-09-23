@@ -1,6 +1,14 @@
 import IslandCore
 import SwiftUI
 
+/// The card showing for one circle, and how far it has opened.
+struct IslandCardState {
+    var id: String
+    /// 0 is the circle, 1 the full card; on a spring, so it can pass 1 a little.
+    var openness: Double
+    var diff: DiffState
+}
+
 /// The island itself, with no dependency on the model or on wall-clock time, so it
 /// can be rendered live inside a TimelineView or offscreen by `--render`.
 struct IslandContent: View {
@@ -10,17 +18,22 @@ struct IslandContent: View {
     /// Wall clock, for "how long has this status been up" decisions.
     var now: Date = Date()
     let petID: String
-    let hoveredID: String?
-    let expandedID: String?
-    var onTap: ((String) -> Void)?
+    var card: IslandCardState?
 
     var body: some View {
-        let expanded = layouts.first { $0.id == expandedID && $0.progress > 0.8 }
-        let cardRect = expanded.map { IslandLayout.cardRect(around: $0.center.x, geometry: geometry) }
+        let cardLayout = card.flatMap { card in layouts.first { $0.id == card.id } }
+        let frame = cardLayout.map { layout in
+            IslandLayout.cardFrame(for: layout, openness: card?.openness ?? 0, geometry: geometry)
+        }
 
         let _ = Diagnostics.count("island-body")
         ZStack(alignment: .topLeading) {
-            let shape = LiquidShape(geometry: geometry, layouts: layouts, card: cardRect)
+            let shape = LiquidShape(
+                geometry: geometry,
+                layouts: layouts,
+                card: frame?.rect,
+                cardCornerRadius: frame?.cornerRadius ?? IslandLayout.cardCornerRadius
+            )
             LiquidLayer(shape: shape)
                 .equatable()
                 .frame(width: shape.size.width, height: shape.size.height)
@@ -30,18 +43,25 @@ struct IslandContent: View {
                 layouts: layouts,
                 petID: petID,
                 clock: clock,
-                now: now,
-                hoveredID: hoveredID
+                now: now
             )
 
-            // Presses on circles are handled by the panel's hosting view, so they can
-            // become drags; only the card takes SwiftUI taps.
-
-            if let expanded, let cardRect {
-                ExpandedCard(session: expanded.session, clock: clock)
-                    .frame(width: cardRect.width, height: cardRect.height)
-                    .position(x: cardRect.midX, y: cardRect.midY)
-                    .onTapGesture { onTap?(expanded.id) }
+            // Presses on circles and the card are handled by the panel's hosting
+            // view in AppKit, so nothing here takes taps.
+            if let card, let cardLayout, let frame {
+                let target = IslandLayout.cardRect(around: cardLayout.center.x, geometry: geometry)
+                ExpandedCard(session: cardLayout.session, diff: card.diff, now: now)
+                    .frame(width: target.width, height: target.height)
+                    // Words never show outside the liquid, even mid-pour.
+                    .mask(alignment: .topLeading) {
+                        RoundedRectangle(cornerRadius: frame.cornerRadius, style: .continuous)
+                            .frame(width: frame.rect.width, height: frame.rect.height)
+                            .offset(x: frame.rect.minX - target.minX, y: frame.rect.minY - target.minY)
+                    }
+                    .position(x: target.midX, y: target.midY)
+                    // And they arrive once the liquid has nearly finished pouring.
+                    .opacity(Spring.smoothstep(card.openness, from: 0.75, to: 0.98))
+                    .allowsHitTesting(false)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -68,9 +88,13 @@ struct IslandRootView: View {
                 clock: now.timeIntervalSince(Self.epoch),
                 now: now,
                 petID: model.settings.codexPetID,
-                hoveredID: model.hoveredID,
-                expandedID: model.expandedID,
-                onTap: { model.open(id: $0) }
+                card: model.cardID.map { id in
+                    IslandCardState(
+                        id: id,
+                        openness: model.cardOpenness.value(at: now),
+                        diff: model.diffState(forSession: id)
+                    )
+                }
             )
         }
         .ignoresSafeArea()

@@ -164,34 +164,50 @@ enum RenderMode {
         .background(backdrop)
     }
 
-    /// A full island with four circles and the hover card open.
+    /// Hovering, then clicking: the circle swells a touch under the pointer, then
+    /// pours down into its card, frame by frame, and the card shows what the agent
+    /// is doing, its diff, and its mode.
     private static func cardSheet() -> some View {
         let geometry = sampleGeometry()
+        var first = sampleSession(kind: .claude, status: .working, effort: .xhigh, ultra: true,
+                                  title: "Refactor the liquid layer", detail: "Edit(IslandModel.swift)")
+        first.permissionMode = "acceptEdits"
+        var second = sampleSession(kind: .codex, status: .working, effort: .ultra, title: "Choose F1 prediction model")
+        second.permissionMode = "workspace-write"
         let sessions = [
-            sampleSession(kind: .claude, status: .question, effort: .xhigh, ultra: true,
-                          title: "Refactor the liquid layer", detail: "Needs approval: Bash(swift test)"),
-            sampleSession(kind: .codex, status: .working, effort: .ultra,
-                          title: "Choose F1 prediction model"),
+            first,
+            second,
             sampleSession(kind: .claude, status: .plan, effort: .low, title: "Fix flaky test"),
             sampleSession(kind: .codex, status: .complete, effort: .high, title: "Review notebook"),
         ]
         let layouts = sessions.enumerated().map { index, session in
             layout(session: session, side: .left, rank: index, geometry: geometry, progress: 1)
         }
+        var hovered = layouts
+        hovered[0].hoverScale = 1.14
+        let diff = DiffState.ready(DiffStat(added: 128, removed: 14, files: 3))
 
-        return VStack(alignment: .leading, spacing: 0) {
-            labeled("four sessions, card open") {
+        func frame(_ label: String, layouts: [BubbleLayout], openness: Double?) -> some View {
+            labeled(label) {
                 IslandContent(
                     geometry: geometry,
                     layouts: layouts,
                     clock: 1.1,
                     petID: PetCatalog.preferredPetID(),
-                    hoveredID: layouts.first?.id,
-                    expandedID: layouts.first?.id
+                    card: openness.map { IslandCardState(id: layouts[0].id, openness: $0, diff: diff) }
                 )
-                .frame(height: 130, alignment: .top)
+                .frame(height: 150, alignment: .top)
                 .clipped()
             }
+        }
+
+        return VStack(alignment: .leading, spacing: 0) {
+            frame("resting", layouts: layouts, openness: nil)
+            frame("hovered: a slight swell, nothing else", layouts: hovered, openness: nil)
+            ForEach([0.2, 0.45, 0.7], id: \.self) { openness in
+                frame("clicked: pouring, \(Int(openness * 100))%", layouts: layouts, openness: openness)
+            }
+            frame("open: click the card to go to the chat", layouts: layouts, openness: 1)
         }
         .background(backdrop)
     }
@@ -368,9 +384,7 @@ enum RenderMode {
             geometry: geometry,
             layouts: layouts(),
             clock: 1.1,
-            petID: PetCatalog.preferredPetID(),
-            hoveredID: nil,
-            expandedID: nil
+            petID: PetCatalog.preferredPetID()
         )
         .frame(height: 56, alignment: .top)
         .clipped()

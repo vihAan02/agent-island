@@ -40,6 +40,9 @@ Everything in the plan is built. `swift build` is clean and 49 tests passed on t
 > - The ultra tier (ultracode and Codex ultra) draws a purple ring and aurora (`IslandStyle.ultra`).
 > - Not yet checked by a person: dragging with a real mouse or trackpad.
 >
+> **Also added (2026-09-23): click-to-open cards.** Hover now only swells a circle, on a spring. Clicking pours the circle into a card (`IslandLayout.cardFrame`, driven by a spring). The card shows the latest tool call, a git `+x −y` for the session's folder (`IslandCore/Util/GitDiffStat.swift`), and the mode (`AgentSession.modeLabel`, from Claude's `permission_mode` or Codex's `sandbox_policy`). Clicking the card opens the chat. Clicking the circle again only closes the card, and so does any click outside the app (a global mouse-down monitor).
+> - Claude reports its activity after each tool finishes (PostToolUse), because the installed PreToolUse matcher covers only AskUserQuestion and ExitPlanMode.
+>
 > Still open, and small:
 > - A circle can now be hidden from the Agents page (the × button), but there is still no right-click menu on the circle itself.
 > - Fixed: the menu's hook buttons used to swallow errors. A failure now opens the Hooks page, which shows the error.

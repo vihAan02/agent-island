@@ -103,6 +103,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model?.setPointer(point)
         }
         controller.pointerTarget = model
+        controller.onOutsideClick = { [weak model] in
+            model?.collapse()
+        }
         model.onExpansionChanged = { [weak controller] expanded in
             controller?.setExpanded(expanded)
         }

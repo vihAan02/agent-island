@@ -46,11 +46,14 @@ public struct CodexRolloutParser: Sendable {
         case "turn_context":
             guard let threadID else { return [] }
             let mode = (payload["collaboration_mode"] as? [String: Any])?["mode"] as? String
+            let sandbox = (payload["sandbox_policy"] as? [String: Any])?["type"] as? String
+                ?? payload["sandbox_policy"] as? String
             return [CodexEvent(
                 threadID: threadID,
                 kind: .turnContext(
                     effort: EffortTier.parse(payload["effort"] as? String),
-                    planMode: mode?.lowercased() == "plan"
+                    planMode: mode?.lowercased() == "plan",
+                    sandbox: sandbox
                 ),
                 at: at
             )]
@@ -98,10 +101,53 @@ public struct CodexRolloutParser: Sendable {
                pendingUserInput.remove(callID) != nil {
                 return [CodexEvent(threadID: threadID, kind: .activity, at: at)]
             }
+            if itemType == "function_call" || itemType == "custom_tool_call",
+               let detail = Self.describeToolCall(
+                   name: payload["name"] as? String,
+                   input: (payload["arguments"] as? String) ?? (payload["input"] as? String)
+               ) {
+                return [CodexEvent(threadID: threadID, kind: .toolCall(detail), at: at)]
+            }
             return []
 
         default:
             return []
+        }
+    }
+
+    /// A short line for a Codex tool call, or nil for bookkeeping calls such as
+    /// waiting on a subagent. Commands come as `"cmd":"..."` inside the call, and
+    /// edits as `apply_patch` bodies naming each file.
+    public static func describeToolCall(name: String?, input: String?) -> String? {
+        let input = input ?? ""
+        func trim(_ text: String, _ limit: Int = 48) -> String {
+            let flat = text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+            return flat.count > limit ? String(flat.prefix(limit - 1)) + "\u{2026}" : flat
+        }
+
+        for marker in ["*** Update File: ", "*** Add File: ", "*** Delete File: "] {
+            if let range = input.range(of: marker) {
+                let path = input[range.upperBound...].prefix { $0 != "\n" && $0 != "\\" && $0 != "\"" }
+                let verb = marker.contains("Add") ? "Add" : marker.contains("Delete") ? "Delete" : "Edit"
+                return "\(verb)(\((String(path) as NSString).lastPathComponent))"
+            }
+        }
+        if let range = input.range(of: #""cmd":""#) {
+            var command = ""
+            var escaped = false
+            for character in input[range.upperBound...] {
+                if escaped { command.append(character == "n" ? " " : character); escaped = false; continue }
+                if character == "\\" { escaped = true; continue }
+                if character == "\"" { break }
+                command.append(character)
+            }
+            if !command.isEmpty { return "Run(\(trim(command)))" }
+        }
+        switch name {
+        case "spawn_agent": return "Starting a subagent"
+        case "apply_patch": return "Editing files"
+        case "web_search", "search": return "Searching the web"
+        default: return nil
         }
     }
 

@@ -109,6 +109,10 @@ public struct AgentSession: Identifiable, Sendable, Equatable {
     public var isUltra: Bool
     /// The session is running in plan mode right now.
     public var planMode: Bool
+    /// How much the agent may do on its own: Claude's permission mode (`default`,
+    /// `acceptEdits`, `auto`, `bypassPermissions`, ...) or Codex's sandbox
+    /// (`read-only`, `workspace-write`, `danger-full-access`). Nil until reported.
+    public var permissionMode: String?
     public var detail: String?
     public var transcriptPath: String?
     public var startedAt: Date
@@ -154,6 +158,25 @@ public struct AgentSession: Identifiable, Sendable, Equatable {
         self.lastActivity = now
         self.isRetiring = false
         self.flashRevertAt = nil
+        self.permissionMode = nil
+    }
+
+    /// A short name for the mode the agent is in, the way each agent's own UI puts it.
+    public var modeLabel: String? {
+        if planMode { return "Plan" }
+        guard let mode = permissionMode, !mode.isEmpty else { return nil }
+        switch mode {
+        case "default": return "Default"
+        case "acceptEdits": return "Accept edits"
+        case "auto": return "Auto"
+        case "plan": return "Plan"
+        case "bypassPermissions": return "Bypass"
+        case "dontAsk": return "Don't ask"
+        case "read-only": return "Read only"
+        case "workspace-write": return "Auto"
+        case "danger-full-access": return "Full access"
+        default: return mode.prefix(1).uppercased() + mode.dropFirst()
+        }
     }
 
     public mutating func setCwd(_ path: String) {

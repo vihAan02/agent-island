@@ -15,7 +15,14 @@ A native macOS app that shows every active **Claude Code** session and **Codex**
 - **max:** a shimmer all the way round.
 - **ultracode** (Claude) and **ultra** (Codex): the ring turns purple, with a purple aurora sweeping round it, a breathing bloom, and sparks.
 
-Hover over a circle to see the repo and branch, the chat title, what the agent is doing, how long it has been going, and the effort level. Click a circle to open that chat.
+Hovering over a circle makes it swell slightly; nothing else happens until you click.
+- **Click a circle** and it pours down into a card. The card shows the repo and branch, the chat title, and what the agent is doing right now: its last tool call, such as `Edit(IslandModel.swift)` or `Run(npm test)`.
+- The card also shows a quick diff of the session's folder (`+128 −14 3 files`) and the agent's mode:
+  - For Claude: Default, Accept edits, Auto, Plan, or Bypass.
+  - For Codex: Read only, Auto, Full access, or Plan.
+- The diff counts uncommitted changes against the last commit, including new files. Git runs with the repository's hooks, fsmonitor, and diff drivers disabled, and never takes the index lock.
+- **Click the card** to open that chat.
+- **Click the circle again**, or anywhere else, to close the card without leaving what you are doing.
 
 **Drag a circle** to move it to the other side of the notch, or to reorder it:
 - The other circles slide aside to make room while you drag.

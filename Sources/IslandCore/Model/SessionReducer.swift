@@ -72,7 +72,10 @@ public struct SessionReducer: Sendable {
         if let path = hook.transcriptPath { session.transcriptPath = path }
         if let effort = hook.effort { session.effort = effort }
         if session.host == .unknown { session.host = host(for: hook) }
-        if let mode = hook.permissionMode { session.planMode = (mode == "plan") }
+        if let mode = hook.permissionMode {
+            session.planMode = (mode == "plan")
+            session.permissionMode = mode
+        }
 
         switch hook.name {
         case .sessionStart:
@@ -97,6 +100,10 @@ public struct SessionReducer: Sendable {
         case .postToolUse:
             if session.status == .question || session.status == .error {
                 setStatus(&session, session.planMode ? .plan : .working, detail: nil, now: now)
+            }
+            // The last thing it did is the best word on what it is doing.
+            if session.status == .working || session.status == .plan, let summary = hook.toolSummary {
+                session.detail = summary
             }
 
         case .postToolUseFailure:
@@ -202,6 +209,9 @@ public struct SessionReducer: Sendable {
         switch signal {
         case .effort(let tier):
             session.effort = tier
+        case .permissionMode(let mode):
+            session.permissionMode = mode
+            session.planMode = (mode == "plan")
         case .assistantActivity:
             session.lastActivity = now
             if !hooked.contains(id), session.status == .complete || session.status == .idle {
@@ -233,12 +243,13 @@ public struct SessionReducer: Sendable {
             session.setCwd(cwd)
             if let title, !title.isEmpty { session.title = title }
 
-        case .turnContext(let effort, let planMode):
+        case .turnContext(let effort, let planMode, let sandbox):
             if let effort {
                 session.effort = effort
                 session.isUltra = (effort == .ultra)
             }
             session.planMode = planMode
+            if let sandbox { session.permissionMode = sandbox }
             if planMode, session.status == .working {
                 setStatus(&session, .plan, detail: nil, now: event.at)
             }
@@ -265,6 +276,12 @@ public struct SessionReducer: Sendable {
             if session.status == .complete || session.status == .idle {
                 setStatus(&session, .working, detail: nil, now: event.at)
             }
+
+        case .toolCall(let detail):
+            if session.status == .complete || session.status == .idle {
+                setStatus(&session, session.planMode ? .plan : .working, detail: nil, now: event.at)
+            }
+            if session.status == .working || session.status == .plan { session.detail = detail }
         }
         store(session)
     }

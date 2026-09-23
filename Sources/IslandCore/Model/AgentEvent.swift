@@ -26,6 +26,8 @@ public enum TranscriptSignal: Sendable, Equatable {
     case planReady
     case apiError(String?)
     case assistantActivity
+    /// Claude's permission mode, which every user line in the transcript carries.
+    case permissionMode(String)
 }
 
 /// One decoded hook payload, from Claude Code or from Codex. Both use the same schema.

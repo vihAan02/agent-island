@@ -13,8 +13,9 @@ struct LiquidShape: Equatable {
     var rightBulge: CGFloat
     var circles: [CGRect]
     var card: CGRect?
+    var cardCornerRadius: CGFloat
 
-    init(geometry: NotchGeometry, layouts: [BubbleLayout], card: CGRect?) {
+    init(geometry: NotchGeometry, layouts: [BubbleLayout], card: CGRect?, cardCornerRadius: CGFloat = 16) {
         func round(_ value: CGFloat) -> CGFloat { (value * 4).rounded() / 4 }
         func round(_ rect: CGRect) -> CGRect {
             CGRect(x: round(rect.minX), y: round(rect.minY), width: round(rect.width), height: round(rect.height))
@@ -32,6 +33,7 @@ struct LiquidShape: Equatable {
         rightBulge = round(IslandLayout.bulge(layouts: layouts, rightSide: true))
         circles = layouts.filter { $0.progress > 0.01 }.map { shifted($0.rect) }
         self.card = card.map(shifted)
+        self.cardCornerRadius = round(cardCornerRadius)
     }
 }
 
@@ -62,7 +64,7 @@ struct LiquidLayer: View, @MainActor Equatable {
 
                 if let card = shape.card {
                     layer.fill(
-                        Path(roundedRect: card, cornerRadius: 16, style: .continuous),
+                        Path(roundedRect: card, cornerRadius: shape.cardCornerRadius, style: .continuous),
                         with: .color(.black)
                     )
                 }
