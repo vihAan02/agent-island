@@ -750,6 +750,8 @@ final class IslandModel: IslandPointerTarget {
             if now.timeIntervalSince(bubble.appearedAt) < 1.2 {
                 return .emerging
             }
+            // The spinner steps a spoke at a time, which needs the frames to land.
+            if bubble.session.isRunningCommand { mode = Swift.max(mode, .ambient) }
             let age = now.timeIntervalSince(bubble.session.statusChangedAt)
             switch bubble.session.status {
             case .working, .question, .plan, .error:

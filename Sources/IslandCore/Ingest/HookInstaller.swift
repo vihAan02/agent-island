@@ -11,6 +11,7 @@ public enum HookInstaller {
     public static let claudeEvents: [(event: String, matcher: String?)] = [
         ("SessionStart", nil),
         ("UserPromptSubmit", nil),
+        ("UserPromptExpansion", nil),
         ("PreToolUse", "AskUserQuestion|ExitPlanMode"),
         ("PostToolUse", nil),
         ("PostToolUseFailure", nil),
@@ -20,6 +21,8 @@ public enum HookInstaller {
         ("Stop", nil),
         ("StopFailure", nil),
         ("SessionEnd", nil),
+        ("PreCompact", nil),
+        ("PostCompact", nil),
     ]
 
     /// Codex uses the same schema, minus the events it does not emit.
@@ -57,20 +60,37 @@ public enum HookInstaller {
     /// Every Agent Island command the settings file runs. More than one, or one that
     /// is not this app's helper, means the app moved since the hooks were added.
     public static func installedCommands(settingsPath: String) -> Set<String> {
-        guard
-            let data = FileManager.default.contents(atPath: settingsPath),
-            let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-            let hooks = root["hooks"] as? [String: Any]
-        else { return [] }
-
+        guard let hooks = readHooks(settingsPath: settingsPath) else { return [] }
         var commands: Set<String> = []
         for (_, value) in hooks {
-            guard let groups = value as? [[String: Any]] else { continue }
-            for group in groups {
-                for entry in (group["hooks"] as? [[String: Any]]) ?? [] {
-                    if let command = entry["command"] as? String, command.contains(marker) {
-                        commands.insert(command)
-                    }
+            commands.formUnion(ourCommands(in: value))
+        }
+        return commands
+    }
+
+    /// Events this version listens for that have no Agent Island hook in the settings
+    /// file yet, as after an update that added some.
+    public static func missingEvents(settingsPath: String, agent: AgentKind) -> [String] {
+        let events = (agent == .claude ? claudeEvents : codexEvents).map(\.event)
+        let hooks = readHooks(settingsPath: settingsPath) ?? [:]
+        return events.filter { ourCommands(in: hooks[$0] as Any).isEmpty }
+    }
+
+    private static func readHooks(settingsPath: String) -> [String: Any]? {
+        guard
+            let data = FileManager.default.contents(atPath: settingsPath),
+            let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return nil }
+        return root["hooks"] as? [String: Any]
+    }
+
+    /// The Agent Island commands in one event's list of hook groups.
+    private static func ourCommands(in groups: Any) -> Set<String> {
+        var commands: Set<String> = []
+        for group in (groups as? [[String: Any]]) ?? [] {
+            for entry in (group["hooks"] as? [[String: Any]]) ?? [] {
+                if let command = entry["command"] as? String, command.contains(marker) {
+                    commands.insert(command)
                 }
             }
         }

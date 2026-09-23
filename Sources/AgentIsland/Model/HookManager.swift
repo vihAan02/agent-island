@@ -56,6 +56,17 @@ final class HookManager {
         }
     }
 
+    /// Adds any events a newer version of the app listens for to hooks this copy
+    /// already installed, so an update works without a trip to the Hooks pane. Hooks
+    /// that were never added, or that run another copy of the app, are left alone.
+    func updateInstalledHooks() {
+        for kind in AgentKind.allCases where state(for: kind) == .installed {
+            let missing = HookInstaller.missingEvents(settingsPath: Self.settingsPath(for: kind), agent: kind)
+            guard !missing.isEmpty, install(kind) else { continue }
+            NSLog("Agent Island: added \(kind.rawValue) hooks for \(missing.joined(separator: ", "))")
+        }
+    }
+
     /// Re-reads the settings files, which may have been edited by hand.
     func refresh() {
         for kind in AgentKind.allCases {

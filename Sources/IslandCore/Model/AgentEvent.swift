@@ -28,6 +28,9 @@ public enum TranscriptSignal: Sendable, Equatable {
     case assistantActivity
     /// Claude's permission mode, which every user line in the transcript carries.
     case permissionMode(String)
+    /// A slash command such as `/compact` is over: it finished, failed, or was
+    /// cancelled. Claude writes these lines once the command ends, so `at` is when.
+    case commandFinished(name: String, at: Date?)
 }
 
 /// One decoded hook payload, from Claude Code or from Codex. Both use the same schema.
@@ -35,6 +38,8 @@ public struct HookEvent: Sendable, Equatable {
     public enum Name: String, Sendable {
         case sessionStart = "SessionStart"
         case userPromptSubmit = "UserPromptSubmit"
+        /// A typed slash command expanding into a prompt, just before UserPromptSubmit.
+        case userPromptExpansion = "UserPromptExpansion"
         case preToolUse = "PreToolUse"
         case postToolUse = "PostToolUse"
         case postToolUseFailure = "PostToolUseFailure"
@@ -45,6 +50,9 @@ public struct HookEvent: Sendable, Equatable {
         case stopFailure = "StopFailure"
         case interrupt = "Interrupt"
         case sessionEnd = "SessionEnd"
+        /// Around compaction, from `/compact` or when the context fills up.
+        case preCompact = "PreCompact"
+        case postCompact = "PostCompact"
     }
 
     public var kind: AgentKind
@@ -61,6 +69,10 @@ public struct HookEvent: Sendable, Equatable {
     public var notificationType: String?
     public var errorText: String?
     public var isInterrupt: Bool
+    /// The slash command a prompt runs, if it runs one.
+    public var commandName: String?
+    /// What started a compaction: `manual` for `/compact`, `auto` for a full context.
+    public var trigger: String?
     /// Present only when the hook fires inside a subagent.
     public var agentID: String?
     public var env: [String: String]
@@ -80,6 +92,8 @@ public struct HookEvent: Sendable, Equatable {
         notificationType: String? = nil,
         errorText: String? = nil,
         isInterrupt: Bool = false,
+        commandName: String? = nil,
+        trigger: String? = nil,
         agentID: String? = nil,
         env: [String: String] = [:],
         receivedAt: Date = Date()
@@ -97,6 +111,8 @@ public struct HookEvent: Sendable, Equatable {
         self.notificationType = notificationType
         self.errorText = errorText
         self.isInterrupt = isInterrupt
+        self.commandName = commandName
+        self.trigger = trigger
         self.agentID = agentID
         self.env = env
         self.receivedAt = receivedAt
@@ -124,6 +140,10 @@ public struct HookEvent: Sendable, Equatable {
 
         let toolName = payload["tool_name"] as? String
         let toolSummary = ToolSummary.describe(toolName: toolName, toolInput: payload["tool_input"])
+        // UserPromptExpansion names the command outright; UserPromptSubmit only has
+        // the prompt as typed, which starts with the command.
+        let commandName = (payload["command_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? SlashCommand.name(fromPrompt: payload["prompt"] as? String)
 
         return HookEvent(
             kind: kind,
@@ -139,6 +159,8 @@ public struct HookEvent: Sendable, Equatable {
             notificationType: payload["notification_type"] as? String,
             errorText: (payload["error"] as? String) ?? (payload["error_details"] as? String),
             isInterrupt: (payload["is_interrupt"] as? Bool) ?? false,
+            commandName: commandName,
+            trigger: payload["trigger"] as? String,
             agentID: payload["agent_id"] as? String,
             env: env,
             receivedAt: now

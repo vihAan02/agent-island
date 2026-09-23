@@ -43,9 +43,67 @@ struct IslandCanvas: View {
         // The black disc keeps the mascot legible over whatever is behind the menu bar.
         circle.fill(Path(ellipseIn: rect), with: .color(.black))
 
-        drawMascot(session: session, in: rect, secondsInStatus: secondsInStatus, context: circle)
-        drawEffortLight(session: session, in: rect, isActive: isActive, context: circle)
-        drawStatusRing(session: session, in: rect, secondsInStatus: secondsInStatus, context: circle)
+        // A running slash command takes the whole circle over, fading in as it starts.
+        let spinner = session.command.map { command in
+            session.isRunningCommand
+                ? Spring.smoothstep(now.timeIntervalSince(command.startedAt), from: 0, to: 0.3)
+                : 0
+        } ?? 0
+
+        if spinner < 1 {
+            var usual = circle
+            usual.opacity *= 1 - spinner
+            // What fades out is the circle as it was, ring color and all.
+            var before = session
+            before.command = nil
+            drawMascot(session: before, in: rect, secondsInStatus: secondsInStatus, context: usual)
+            drawEffortLight(session: before, in: rect, isActive: isActive, context: usual)
+            drawStatusRing(session: before, in: rect, secondsInStatus: secondsInStatus, context: usual)
+        }
+        if spinner > 0 {
+            var command = circle
+            command.opacity *= spinner
+            drawCommandSpinner(in: rect, appear: spinner, context: command)
+        }
+    }
+
+    // MARK: - Slash command spinner
+
+    /// While a slash command such as `/compact` runs, the circle is a white activity
+    /// spinner: eight spokes lit one after the next, stepping rather than turning,
+    /// the way the system's own spinner does, inside a ring that blinks.
+    private func drawCommandSpinner(in rect: CGRect, appear: Double, context: GraphicsContext) {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let spokes = 8
+        let stepsPerSecond = 12.0
+        let lit = Int(clock * stepsPerSecond) % spokes
+        // The spokes grow into place as the spinner fades in.
+        let size = rect.width * CGFloat(0.8 + 0.2 * appear)
+        let inner = size * 0.15
+        let outer = size * 0.31
+
+        for index in 0..<spokes {
+            // How many steps ago this spoke was the lit one; the tail fades out behind it.
+            let age = (lit - index + spokes) % spokes
+            let brightness = max(0.2, 1 - Double(age) * 0.13)
+            let angle = Double(index) / Double(spokes) * 2 * .pi - .pi / 2
+            let direction = CGPoint(x: cos(angle), y: sin(angle))
+            var spoke = Path()
+            spoke.move(to: CGPoint(x: center.x + direction.x * inner, y: center.y + direction.y * inner))
+            spoke.addLine(to: CGPoint(x: center.x + direction.x * outer, y: center.y + direction.y * outer))
+            context.stroke(
+                spoke,
+                with: .color(.white.opacity(brightness)),
+                style: StrokeStyle(lineWidth: size * 0.085, lineCap: .round)
+            )
+        }
+
+        // A blink rather than a breath: mostly off, with a quick bright pulse.
+        let wave = 0.5 + 0.5 * cos(clock * 2 * .pi / 1.1)
+        let blink = wave * wave * wave
+        let ring = Path(ellipseIn: rect.insetBy(dx: 1.1, dy: 1.1))
+        context.stroke(ring, with: .color(.white.opacity(0.14 * blink)), style: StrokeStyle(lineWidth: 5.5))
+        context.stroke(ring, with: .color(.white.opacity(0.28 + 0.67 * blink)), style: StrokeStyle(lineWidth: 1.9))
     }
 
     // MARK: - Mascots

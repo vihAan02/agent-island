@@ -110,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller?.setExpanded(expanded)
         }
 
+        AppEnvironment.shared.hooks.updateInstalledHooks()
         model.start()
 
         DistributedNotificationCenter.default().addObserver(

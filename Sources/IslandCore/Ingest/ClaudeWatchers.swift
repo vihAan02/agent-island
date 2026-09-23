@@ -163,6 +163,22 @@ public actor ClaudeTranscriptWatcher {
         if let mode = object["permissionMode"] as? String, !mode.isEmpty {
             signals.append(.permissionMode(mode))
         }
+        if (object["type"] as? String) == "system" {
+            // A command's lines land once it is over: a compaction boundary when
+            // compacting worked, a local_command line when it failed or was cancelled.
+            let at = CodexRolloutParser.timestamp(object["timestamp"] as? String)
+            switch object["subtype"] as? String {
+            case "compact_boundary":
+                signals.append(.commandFinished(name: SlashCommand.compact, at: at))
+            case "local_command":
+                if let name = (object["commandRun"] as? [String: Any])?["command"] as? String {
+                    signals.append(.commandFinished(name: name, at: at))
+                }
+            default:
+                break
+            }
+            return signals
+        }
         if (object["isApiErrorMessage"] as? Bool) == true {
             let text = Self.firstText(in: object)
             signals.append(.apiError(text))

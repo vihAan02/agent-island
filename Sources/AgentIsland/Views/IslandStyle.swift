@@ -12,6 +12,8 @@ enum IslandStyle {
     static let error = Color(red: 230 / 255, green: 86 / 255, blue: 74 / 255)
     static let complete = Color(red: 88 / 255, green: 199 / 255, blue: 127 / 255)
     static let plan = Color(red: 157 / 255, green: 130 / 255, blue: 236 / 255)
+    /// A slash command running: plain white, like the system spinner.
+    static let command = Color.white
     /// Ultracode and Codex ultra: a saturated purple, well clear of the soft lavender
     /// of a plan, and always moving, where the plan ring holds still.
     static let ultra = Color(red: 0.66, green: 0.30, blue: 0.98)
@@ -28,9 +30,10 @@ enum IslandStyle {
     }
 
     /// The ring color for a status. Working keeps the agent's own color, or purple
-    /// at ultra effort.
+    /// at ultra effort; a running slash command is white.
     static func ring(for session: AgentSession) -> Color {
-        switch session.status {
+        if session.isRunningCommand { return command }
+        return switch session.status {
         case .working: session.effectiveEffort == .ultra ? ultra : brand(session.kind)
         case .question: question
         case .plan: plan

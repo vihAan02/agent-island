@@ -47,6 +47,14 @@ Everything in the plan is built. `swift build` is clean and 49 tests passed on t
 > - A circle can now be hidden from the Agents page (the × button), but there is still no right-click menu on the circle itself.
 > - Fixed: the menu's hook buttons used to swallow errors. A failure now opens the Hooks page, which shows the error.
 > - The peek hysteresis still needs a check with a real pointer. It is part of "Needs a person" item 1.
+>
+> **Also added (2026-09-23): a white spinner while a slash command runs.** `AgentSession.command` (a `SlashCommand`) is set by three new Claude hooks, and `isRunningCommand` swaps the mascot, effort light, and ring for a white 8-spoke spinner in a blinking ring (`IslandCanvas.drawCommandSpinner`). `--render` writes `command.png`.
+> - Checked against Claude Code 2.1.280 headlessly: `/compact` fires PreCompact and PostCompact but *not* UserPromptSubmit. A typed prompt command fires UserPromptExpansion (with `command_name`), then UserPromptSubmit with the raw `/name args` prompt.
+> - The transcript writes a command's lines only once it is over: `compact_boundary` on success, a `system`/`local_command` line on failure or cancel. Those end the spinner too, but only if written after the command started, because a transcript's first read replays old ones. A command silent for 15 minutes is dropped as a last resort.
+> - PostCompact never fires inside a subagent, so a subagent's PreCompact is ignored.
+> - The app adds missing events to its own installed hooks at launch (`HookManager.updateInstalledHooks`).
+> - `simulate.sh` now walks `/compact` and a `/review` with a permission prompt in it. Every step landed under `--probe`.
+> - Not yet checked by a person: a real `/compact` in a live session.
 
 **Already working**
 - **Detection.**

@@ -10,6 +10,9 @@ public struct SessionReducer: Sendable {
     public var errorFlashDuration: TimeInterval = 2.5
     /// A session that has said nothing at all for this long is dropped.
     public var retireStaleAfter: TimeInterval = 3600
+    /// A slash command that has gone this long without a word is taken to be over.
+    /// Its end is always written down, but only in a transcript that may not be followed.
+    public var commandTimeout: TimeInterval = 900
 
     public private(set) var sessions: [String: AgentSession] = [:]
     /// Insertion order, so a circle keeps its slot while others come and go.
@@ -83,12 +86,43 @@ public struct SessionReducer: Sendable {
 
         case .userPromptSubmit:
             setStatus(&session, session.planMode ? .plan : .working, detail: nil, now: now)
+            if let name = hook.commandName {
+                startCommand(&session, name: name, now: now)
+            } else {
+                session.command = nil
+            }
+
+        case .userPromptExpansion:
+            setStatus(&session, session.planMode ? .plan : .working, detail: nil, now: now)
+            if let name = hook.commandName { startCommand(&session, name: name, now: now) }
+
+        case .preCompact:
+            // A subagent compacting its own context gets no PostCompact, and has no
+            // circle of its own to show it on.
+            guard !isSubagent else { break }
+            let wasBusy = session.status == .working || session.status == .plan
+            if wasBusy {
+                session.detail = nil
+            } else {
+                setStatus(&session, session.planMode ? .plan : .working, detail: nil, now: now)
+            }
+            session.command = SlashCommand(
+                name: SlashCommand.compact,
+                startedAt: now,
+                endsTurn: hook.trigger.map { $0 == "manual" } ?? !wasBusy
+            )
+
+        case .postCompact:
+            guard !isSubagent else { break }
+            finishCommand(&session, named: SlashCommand.compact, now: now)
 
         case .preToolUse:
             switch hook.toolName {
             case "AskUserQuestion":
                 setStatus(&session, .question, detail: hook.toolSummary, now: now)
             case "ExitPlanMode":
+                // The plan is what the command was for; approving it starts a new stretch.
+                session.command = nil
                 setStatus(&session, .plan, detail: "Plan ready for review", now: now)
             default:
                 if !isSubagent, session.status == .question || session.status == .error {
@@ -129,6 +163,7 @@ public struct SessionReducer: Sendable {
             setStatus(&session, .complete, detail: nil, now: now)
 
         case .stopFailure:
+            session.command = nil
             setStatus(&session, .error, detail: hook.errorText, now: now)
 
         case .interrupt:
@@ -226,6 +261,11 @@ public struct SessionReducer: Sendable {
         case .apiError(let text):
             setStatus(&session, .error, detail: text, now: now)
             session.flashRevertAt = now.addingTimeInterval(errorFlashDuration)
+        case .commandFinished(let name, let at):
+            // The first read of a transcript replays its past, so only an end written
+            // after this command started can be this command's.
+            guard let command = session.command, (at ?? now) > command.startedAt else { break }
+            finishCommand(&session, named: name, now: now)
         }
         store(session)
     }
@@ -310,6 +350,11 @@ public struct SessionReducer: Sendable {
                 continue
             }
 
+            if let command = session.command, now.timeIntervalSince(session.lastActivity) > commandTimeout {
+                finishCommand(&session, named: command.name, now: now)
+                store(session)
+            }
+
             if now.timeIntervalSince(session.lastActivity) > retireStaleAfter {
                 retire(id, now: now)
                 retired.append(id)
@@ -353,6 +398,26 @@ public struct SessionReducer: Sendable {
         AgentSession(id: id, kind: kind, now: now)
     }
 
+    /// Notes a slash command starting, keeping the one already running if this is
+    /// the same command reported twice: UserPromptExpansion, then UserPromptSubmit.
+    private func startCommand(_ session: inout AgentSession, name: String, now: Date) {
+        guard session.command?.name != name else { return }
+        session.command = SlashCommand(name: name, startedAt: now)
+    }
+
+    /// Ends a slash command. One typed at an idle prompt leaves the session done;
+    /// one that ran inside a turn hands back to the turn.
+    private mutating func finishCommand(_ session: inout AgentSession, named name: String, now: Date) {
+        guard let command = session.command, command.name == name else { return }
+        session.command = nil
+        guard session.status == .working || session.status == .plan else { return }
+        if command.endsTurn {
+            setStatus(&session, .complete, detail: nil, now: now)
+        } else {
+            session.detail = nil
+        }
+    }
+
     private mutating func store(_ session: AgentSession) {
         if sessions[session.id] == nil { order.append(session.id) }
         sessions[session.id] = session
@@ -371,6 +436,8 @@ public struct SessionReducer: Sendable {
         session.detail = detail
         session.lastActivity = now
         if status != .error { session.flashRevertAt = nil }
+        // However the turn ended, nothing it started is still running.
+        if status == .complete || status == .idle { session.command = nil }
     }
 
     private mutating func retire(_ id: String, now: Date) {

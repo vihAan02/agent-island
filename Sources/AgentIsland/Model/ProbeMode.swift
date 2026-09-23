@@ -24,7 +24,9 @@ enum ProbeMode {
             try? await Task.sleep(for: .milliseconds(250))
             let report = model.bubbles.map { bubble in
                 let session = bubble.session
-                let state = session.isRetiring ? " (leaving)" : bubble.isRetracting ? " (tucked)" : ""
+                let motion = session.isRetiring ? " (leaving)" : bubble.isRetracting ? " (tucked)" : ""
+                let command = session.command.map { " /\($0.name)" + (session.isRunningCommand ? " spinner" : "") } ?? ""
+                let state = motion + command
                 let place = bubble.side.map { "\($0.rawValue) \(bubble.rank)" } ?? "waiting"
                 return "  \(place)  \(session.kind.rawValue)  \(session.status.rawValue)\(state)"
                     + "  effort=\(session.effortLabel)"

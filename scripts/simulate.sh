@@ -1,6 +1,7 @@
 #!/bin/bash
-# Walks a fake Claude session and a fake Codex thread through every status, through
-# the real hook helper, so the socket, the decoding, and the reducer run together.
+# Walks a fake Claude session and a fake Codex thread through every status, and the
+# Claude one through /compact and a /review, through the real hook helper, so the
+# socket, the decoding, and the reducer run together.
 #
 #   scripts/simulate.sh [seconds per step]      (default 3)
 #
@@ -87,6 +88,31 @@ claude_walk() {
     pause 0.6
 
     say claude complete "Stop"
+    claude Stop '"stop_hook_active":false'
+    pause 1.5
+
+    say claude spinner "PreCompact: /compact typed at the idle prompt"
+    claude PreCompact '"trigger":"manual","custom_instructions":null'
+    pause 1.5
+
+    say claude complete "PostCompact"
+    claude PostCompact '"trigger":"manual","compact_summary":"The user asked for a fix."'
+    pause
+
+    say claude spinner "UserPromptExpansion + UserPromptSubmit: /review"
+    claude UserPromptExpansion '"expansion_type":"slash_command","command_name":"review","command_args":"","command_source":"builtin","prompt":"/review"'
+    claude UserPromptSubmit '"prompt":"/review"'
+    pause
+
+    say claude question "PermissionRequest inside /review: the question shows"
+    claude PermissionRequest '"tool_name":"Bash","tool_input":{"command":"git diff main"}'
+    pause
+
+    say claude spinner "PostToolUse: back to the spinner"
+    claude PostToolUse '"tool_name":"Bash","tool_input":{"command":"git diff main"}'
+    pause
+
+    say claude complete "Stop: /review is done"
     claude Stop '"stop_hook_active":false'
     pause 1.5
 

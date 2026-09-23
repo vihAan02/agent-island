@@ -19,6 +19,7 @@ enum RenderMode {
         write(statusSheet(), to: directory.appendingPathComponent("statuses.png"))
         write(effortSheet(), to: directory.appendingPathComponent("efforts.png"))
         write(cardSheet(), to: directory.appendingPathComponent("card.png"))
+        write(commandSheet(), to: directory.appendingPathComponent("command.png"))
         write(dragSheet(), to: directory.appendingPathComponent("drag.png"))
         write(modelDragSheet(), to: directory.appendingPathComponent("drag-model.png"))
         write(mascotSheet(), to: directory.appendingPathComponent("mascots.png"))
@@ -212,6 +213,57 @@ enum RenderMode {
         .background(backdrop)
     }
 
+    /// A slash command running: the circle turns into a white spinner, shown step by
+    /// step beside a circle at work, and beside a question, which it never hides.
+    private static func commandSheet() -> some View {
+        let geometry = sampleGeometry()
+
+        func running(_ kind: AgentKind, _ name: String, startedAgo: Double = 2, status: AgentStatus = .working) -> AgentSession {
+            var session = sampleSession(kind: kind, status: status, effort: .xhigh, title: "Dynamic island floating chat app")
+            session.id += "-\(name)-\(startedAgo)"
+            session.command = SlashCommand(name: name, startedAt: Date().addingTimeInterval(-startedAgo))
+            return session
+        }
+        let sessions = [
+            running(.claude, SlashCommand.compact),
+            sampleSession(kind: .claude, status: .working, effort: .xhigh),
+            running(.codex, "review"),
+            running(.claude, "review", status: .question),
+        ]
+        let layouts = sessions.enumerated().map { index, session in
+            layout(session: session, side: .left, rank: index, geometry: geometry, progress: 1)
+        }
+        // Rank 0 sits by the notch, so the earliest frame goes furthest out, on the left.
+        let fading = [0.3, 0.15, 0.05].enumerated().map { index, ago in
+            layout(session: running(.claude, SlashCommand.compact, startedAgo: ago), side: .left, rank: index, geometry: geometry, progress: 1)
+        }
+        let steps: [(String, Double)] = [
+            ("/compact, /review, beside working and a question", 1.1),
+            ("one step on", 1.1 + 1.0 / 12),
+            ("two steps on", 1.1 + 2.0 / 12),
+            ("between blinks", 1.65),
+        ]
+
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(steps, id: \.1) { label, clock in
+                labeled(label) { band(geometry: geometry, clock: clock) { layouts } }
+            }
+            labeled("fading in: 0.05s, 0.15s, 0.3s") { band(geometry: geometry) { fading } }
+            labeled("open: what the command is doing") {
+                IslandContent(
+                    geometry: geometry,
+                    layouts: layouts,
+                    clock: 1.1,
+                    petID: PetCatalog.preferredPetID(),
+                    card: IslandCardState(id: layouts[0].id, openness: 1, diff: .ready(DiffStat(added: 42, removed: 7, files: 2)))
+                )
+                .frame(height: 150, alignment: .top)
+                .clipped()
+            }
+        }
+        .background(backdrop)
+    }
+
     /// One circle dragged from the left, across the notch, and let go on the right,
     /// then the landing, frame by frame: the others close up behind it, and it
     /// overshoots its place and swings back.
@@ -378,12 +430,13 @@ enum RenderMode {
 
     private static func band(
         geometry: NotchGeometry,
+        clock: Double = 1.1,
         layouts: () -> [BubbleLayout]
     ) -> some View {
         IslandContent(
             geometry: geometry,
             layouts: layouts(),
-            clock: 1.1,
+            clock: clock,
             petID: PetCatalog.preferredPetID()
         )
         .frame(height: 56, alignment: .top)

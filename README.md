@@ -9,6 +9,13 @@ A native macOS app that shows every active **Claude Code** session and **Codex**
 | plan: plan mode, or a plan ready for review | violet | Clawd scans slowly; the pet reviews |
 | error: StopFailure, a stream error, or a failed tool call | red. A failed tool call only flashes. | Clawd shakes; the pet plays its failed animation |
 | complete | green sweep, then dims | Clawd jumps; the pet jumps, then idles |
+| running a slash command: `/compact`, or any command you type | white, blinking | the circle turns into a white spinner |
+
+**Slash commands.** While Claude runs a command you typed, the whole circle becomes a white spinner: eight spokes lit one after another inside a blinking ring.
+- `/compact` spins until compacting is done, then lands green. Claude compacting on its own when the context fills up spins too, then goes back to work.
+- A command that expands into a prompt, such as `/review` or your own commands and skills, spins for its whole turn.
+- A question, a ready plan, or an error still shows over the spinner, since those need you. The spinner comes back once you answer.
+- The card says what the command is doing, for example "Compacting conversation…" or "/review · Bash(git diff main)".
 
 **Effort** shows as light orbiting the ring while the agent works:
 - **low to xhigh:** one to three comets, going faster and brighter at each tier.
@@ -71,7 +78,8 @@ The app finds sessions without hooks, but hooks make it precise. Without hooks, 
 
 - **Claude Code.** **Add Hooks** on the window's Hooks page, *Add Claude Hooks* in the menu, or `AgentIsland --install-hooks` adds entries to `~/.claude/settings.json`.
   - Each entry runs `agent-island-hook claude` with `async: true`, so it never blocks a turn and never prints anything that could affect a permission decision.
-  - The events covered are SessionStart, UserPromptSubmit, PreToolUse (for AskUserQuestion and ExitPlanMode only), PostToolUse, PostToolUseFailure, PermissionRequest, PermissionDenied, Notification, Stop, StopFailure, and SessionEnd.
+  - The events covered are SessionStart, UserPromptSubmit, UserPromptExpansion, PreToolUse (for AskUserQuestion and ExitPlanMode only), PostToolUse, PostToolUseFailure, PermissionRequest, PermissionDenied, Notification, Stop, StopFailure, SessionEnd, PreCompact, and PostCompact.
+  - When a new version listens for more events, it adds them at launch to hooks it installed before. Hooks you never added, or that run another copy of the app, are left alone.
   - The original file is backed up to `settings.json.agent-island.bak` before anything changes. Installing twice changes nothing.
   - To remove them, use **Remove Hooks** or `AgentIsland --uninstall-hooks`. This removes only Agent Island's entries.
 - **Codex.** Opt in from the Hooks page or the menu, which writes `~/.codex/hooks/hooks.json`. Codex may ask you to trust the new hooks the first time. Codex works without hooks because its rollout files already report every status. Hooks can still catch approval requests that aren't written to rollouts.
@@ -117,7 +125,8 @@ Only one copy of the app runs at a time. Quit the menu bar copy before running t
 ```bash
 swift build && swift test
 ./scripts/simulate.sh            # with the app running: walks a fake Claude
-                                 # session and Codex thread through every status
+                                 # session and Codex thread through every status,
+                                 # and the Claude one through /compact and /review
 ```
 
 `simulate.sh` pipes hook payloads through the real helper binary. To check the result without looking at the screen, run `AgentIsland --probe 45 &` first; the probe prints each status change. You can override any preference for one run from the command line, for example `--probe 30 -visibility popThenTuck -tuckAfter 3`.

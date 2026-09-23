@@ -79,7 +79,10 @@ struct ExpandedCard: View {
     }
 
     private var activitySymbol: String {
-        switch session.status {
+        if session.isRunningCommand {
+            return session.command?.name == SlashCommand.compact ? "arrow.down.right.and.arrow.up.left" : "slash.circle"
+        }
+        return switch session.status {
         case .question: "questionmark.circle.fill"
         case .plan: "list.bullet.clipboard"
         case .error: "exclamationmark.triangle.fill"

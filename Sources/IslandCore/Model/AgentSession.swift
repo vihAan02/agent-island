@@ -93,6 +93,37 @@ public enum EffortTier: String, Codable, Sendable, CaseIterable, Comparable {
     }
 }
 
+/// A slash command the user typed that is still running, such as `/compact`.
+public struct SlashCommand: Sendable, Equatable {
+    public static let compact = "compact"
+
+    /// The command without its slash: `compact`, `review`, `plugin:command`.
+    public var name: String
+    public var startedAt: Date
+    /// Typed at an idle prompt and run on its own, like a manual `/compact`, so the
+    /// session is done when it ends. Auto-compaction, and commands that expand into
+    /// a prompt, run inside a turn that carries on afterwards.
+    public var endsTurn: Bool
+
+    public init(name: String, startedAt: Date, endsTurn: Bool = false) {
+        self.name = name
+        self.startedAt = startedAt
+        self.endsTurn = endsTurn
+    }
+
+    /// The command a prompt runs, or nil when it runs none. `/review 12` runs
+    /// `review`; a prompt that only starts with a path, like `/Users/me`, runs nothing.
+    public static func name(fromPrompt prompt: String?) -> String? {
+        guard let prompt, prompt.first == "/" else { return nil }
+        let name = prompt.dropFirst().prefix { !$0.isWhitespace }
+        guard
+            name.first?.isLetter == true,
+            name.allSatisfy({ $0.isLetter || $0.isNumber || "-_:.".contains($0) })
+        else { return nil }
+        return String(name)
+    }
+}
+
 /// One live agent conversation.
 public struct AgentSession: Identifiable, Sendable, Equatable {
     public var id: String
@@ -113,6 +144,8 @@ public struct AgentSession: Identifiable, Sendable, Equatable {
     /// `acceptEdits`, `auto`, `bypassPermissions`, ...) or Codex's sandbox
     /// (`read-only`, `workspace-write`, `danger-full-access`). Nil until reported.
     public var permissionMode: String?
+    /// The slash command running right now, if any.
+    public var command: SlashCommand?
     public var detail: String?
     public var transcriptPath: String?
     public var startedAt: Date
@@ -159,6 +192,13 @@ public struct AgentSession: Identifiable, Sendable, Equatable {
         self.isRetiring = false
         self.flashRevertAt = nil
         self.permissionMode = nil
+        self.command = nil
+    }
+
+    /// The circle turns into a spinner while a slash command runs. A question or an
+    /// error still comes first: those need the user.
+    public var isRunningCommand: Bool {
+        command != nil && (status == .working || status == .plan)
     }
 
     /// A short name for the mode the agent is in, the way each agent's own UI puts it.

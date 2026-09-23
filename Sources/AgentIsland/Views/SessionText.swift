@@ -5,6 +5,11 @@ import IslandCore
 extension AgentSession {
     /// One line on what the agent is doing right now.
     var statusLine: String {
+        if isRunningCommand, let command {
+            let label = command.name == SlashCommand.compact ? "Compacting conversation" : "/\(command.name)"
+            if let detail, !detail.isEmpty { return "\(label) \u{00B7} \(detail)" }
+            return command.name == SlashCommand.compact ? label + "\u{2026}" : "Running \(label)\u{2026}"
+        }
         if let detail, !detail.isEmpty { return detail }
         switch status {
         case .working: return "Working\u{2026}"
